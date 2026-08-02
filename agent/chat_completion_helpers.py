@@ -1831,6 +1831,16 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     if tools_for_api is None:
         tools_for_api = agent.tools
 
+    # Adaptive model routing: choose profile based on content + tool context.
+    # Uses a local variable so the agent's model attribute is not mutated
+    # (preserves prompt caching across turns).
+    _model = agent.model
+    try:
+        from agent.adaptive_model_routing import resolve_model_for_request
+        _model = resolve_model_for_request(agent, api_messages, tools_for_api)
+    except Exception:
+        pass  # Never crash the agent loop
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
@@ -1840,7 +1850,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         if ephemeral_out is not None:
             agent._ephemeral_max_output_tokens = None  # consume immediately
         anthropic_kwargs = _transport.build_kwargs(
-            model=agent.model,
+            model=_model,
             messages=anthropic_messages,
             tools=tools_for_api,
             max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
@@ -1866,7 +1876,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
         return _bt.build_kwargs(
-            model=agent.model,
+            model=_model,
             messages=api_messages,
             tools=tools_for_api,
             max_tokens=agent.max_tokens or 4096,
@@ -1933,7 +1943,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
                 )
 
         return _ct.build_kwargs(
-            model=agent.model,
+            model=_model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
@@ -2037,7 +2047,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
         return _ct.build_kwargs(
-            model=agent.model,
+            model=_model,
             messages=api_messages,
             tools=tools_for_api,
             base_url=agent.base_url,
@@ -2070,7 +2080,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
     return _ct.build_kwargs(
-        model=agent.model,
+        model=_model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
         base_url=agent.base_url,
