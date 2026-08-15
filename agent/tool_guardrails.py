@@ -285,7 +285,7 @@ class ToolCallGuardrailController:
         # Per-turn runaway-loop cap counters. Reset every turn (this method
         # runs at the start of each run_conversation), so the caps bound a
         # single agent loop rather than accumulating across the session.
-        self._turn_web_search_count = 0
+        self._turn_web_search_identical: dict[str, int] = {}
         self._turn_subagent_count = 0
 
     @property
@@ -456,28 +456,36 @@ class ToolCallGuardrailController:
         increments the relevant counter for the allowed call and returns
         ``None``. A cap of 0 disables that limit entirely. Counters reset each
         turn via ``reset_for_turn``.
+
+        For ``web_search``, the cap counts only **identical** queries (same
+        args hash) within the turn, not all searches. This allows legitimate
+        multi-query research while still catching runaway loops that repeat
+        the same query.
         """
         caps = self.config.loop_caps
 
         if tool_name == "web_search":
             cap = caps.max_web_searches
-            if cap and self._turn_web_search_count >= cap:
-                decision = ToolGuardrailDecision(
-                    action="block",
-                    code="loop_web_search_cap",
-                    message=(
-                        f"Blocked web_search: this turn has already made {cap} "
-                        "web searches, the per-turn limit. This looks like a "
-                        "runaway search loop. Work with the results you already "
-                        "have and give the user your answer."
-                    ),
-                    tool_name=tool_name,
-                    count=self._turn_web_search_count,
-                    signature=signature,
-                )
-                self._halt_decision = decision
-                return decision
-            self._turn_web_search_count += 1
+            if cap:
+                # Count only identical queries (same args hash)
+                identical_count = self._turn_web_search_identical.get(signature.args_hash, 0)
+                if identical_count >= cap:
+                    decision = ToolGuardrailDecision(
+                        action="block",
+                        code="loop_web_search_cap",
+                        message=(
+                            f"Blocked web_search: this query has been repeated "
+                            f"{identical_count} times this turn (limit {cap}). "
+                            "This looks like a runaway search loop. Work with the "
+                            "results you already have or try a different query."
+                        ),
+                        tool_name=tool_name,
+                        count=identical_count,
+                        signature=signature,
+                    )
+                    self._halt_decision = decision
+                    return decision
+                self._turn_web_search_identical[signature.args_hash] = identical_count + 1
             return None
 
         if tool_name == "delegate_task":

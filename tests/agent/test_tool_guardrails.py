@@ -153,8 +153,8 @@ def test_loop_cap_zero_disables_and_junk_falls_back():
 
 def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     # Loop caps fire even with hard_stop_enabled=False (the per-turn loop
-    # detector's flag). Each distinct query avoids the loop detector so we know
-    # the block came from the loop cap, not exact-failure repetition.
+    # detector's flag). The cap counts only identical queries, so we use the
+    # same query to trigger the block.
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(
             hard_stop_enabled=False,
@@ -162,11 +162,24 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
         )
     )
     for i in range(3):
-        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
-    decision = controller.before_call("web_search", {"query": "q4"})
+        assert controller.before_call("web_search", {"query": "same"}).action == "allow"
+    decision = controller.before_call("web_search", {"query": "same"})
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
+
+
+def test_web_search_cap_allows_different_queries():
+    # Different queries should not be blocked by the loop cap, even if there
+    # are more than the cap value.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_web_searches=3),
+        )
+    )
+    for i in range(10):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
 
 
 
