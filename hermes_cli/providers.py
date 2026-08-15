@@ -23,6 +23,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils import base_url_host_matches, base_url_hostname
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,10 +44,14 @@ class HermesOverlay:
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+    "moa": HermesOverlay(
+        transport="openai_chat",
+        auth_type="virtual",
+        base_url_override="moa://local",
+    ),
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
-        extra_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(
@@ -58,11 +64,29 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "openai-api": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.openai.com/v1",
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
+    "xai-oauth": HermesOverlay(
+        transport="codex_responses",
+        auth_type="oauth_external",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_external",
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
+    ),
+    "lmstudio": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("LM_API_KEY",),
+        base_url_override="http://127.0.0.1:1234/v1",
+        base_url_env_var="LM_BASE_URL",
     ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
@@ -87,9 +111,20 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "stepfun": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("STEPFUN_API_KEY",),
+        base_url_override="https://api.stepfun.ai/step_plan/v1",
+        base_url_env_var="STEPFUN_BASE_URL",
+    ),
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "minimax-oauth": HermesOverlay(
+        transport="anthropic_messages",
+        auth_type="oauth_external",
+        base_url_override="https://api.minimax.io/anthropic",
     ),
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",
@@ -102,6 +137,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
+    ),
+    "alibaba-coding-plan": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
     "vercel": HermesOverlay(
         transport="openai_chat",
@@ -127,14 +166,84 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
-    "xai": HermesOverlay(
+    "novita": HermesOverlay(
         transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="NOVITA_BASE_URL",
+    ),
+    "xai": HermesOverlay(
+        transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
+    ),
+    "nvidia": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://integrate.api.nvidia.com/v1",
+        base_url_env_var="NVIDIA_BASE_URL",
     ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
+    ),
+    "tencent-tokenhub": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="TOKENHUB_BASE_URL",
+    ),
+    "arcee": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.arcee.ai/api/v1",
+        base_url_env_var="ARCEE_BASE_URL",
+    ),
+    "gmi": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GMI_API_KEY",),
+        base_url_override="https://api.gmi-serving.com/v1",
+        base_url_env_var="GMI_BASE_URL",
+    ),
+    "fireworks": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("FIREWORKS_API_KEY",),
+        base_url_override="https://api.fireworks.ai/inference/v1",
+    ),
+    "actual": HermesOverlay(
+        transport="codex_responses",
+        extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
+        base_url_override="https://api.actual.inc/v1",
+        base_url_env_var="ACTUAL_BASE_URL",
+    ),
+    "upstage": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("UPSTAGE_API_KEY",),
+        base_url_override="https://api.upstage.ai/v1",
+        base_url_env_var="UPSTAGE_BASE_URL",
+    ),
+    "ollama-cloud": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://ollama.com/v1",
+        base_url_env_var="OLLAMA_BASE_URL",
+    ),
+    # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
+    # The transport is determined at runtime from config.yaml model.api_mode.
+    "azure-foundry": HermesOverlay(
+        transport="openai_chat",  # default; overridden by api_mode in config
+        base_url_env_var="AZURE_FOUNDRY_BASE_URL",
+    ),
+    "bedrock": HermesOverlay(
+        transport="bedrock_converse",
+        auth_type="aws_sdk",
+    ),
+    # Vertex authenticates via OAuth2 (service-account JSON / ADC), not a
+    # static API key or models.dev entry — resolved specially by
+    # agent/vertex_adapter.py, like bedrock's aws_sdk. Without an overlay
+    # entry get_provider("vertex") returns None, which makes
+    # _preserve_provider_with_base_url() in agent/auxiliary_client.py treat
+    # a Vertex MoA slot's resolved (base_url, api_key) pair as an unknown
+    # custom endpoint instead of "vertex" — losing the provider identity
+    # that _refresh_provider_credentials() needs to re-mint an expired
+    # OAuth2 token on a 401.
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
     ),
 }
 
@@ -175,11 +284,27 @@ ALIASES: Dict[str, str] = {
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
+    "grok": "xai",
+    "grok-oauth": "xai-oauth",
+    "xai-oauth": "xai-oauth",
+    "x-ai-oauth": "xai-oauth",
+    "xai-grok-oauth": "xai-oauth",
+
+    # nvidia
+    "nim": "nvidia",
+    "nvidia-nim": "nvidia",
+    "build-nvidia": "nvidia",
+    "nemotron": "nvidia",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
+    "kimi-coding-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+
+    # stepfun
+    "step": "stepfun",
+    "stepfun-coding-plan": "stepfun",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -220,21 +345,60 @@ ALIASES: Dict[str, str] = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "alibaba_coding": "alibaba-coding-plan",
+    "alibaba-coding": "alibaba-coding-plan",
+    "alibaba_coding_plan": "alibaba-coding-plan",
 
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # novita
+    "novita-ai": "novita",
+    "novitaai": "novita",
+
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+
+    # tencent
+    "tencent": "tencent-tokenhub",
+    "tokenhub": "tencent-tokenhub",
+    "tencent-cloud": "tencent-tokenhub",
+    "tencentmaas": "tencent-tokenhub",
+
+    # bedrock
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
+
+    # arcee
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
+
+    # gmi
+    "gmi-cloud": "gmi",
+    "gmicloud": "gmi",
+
+    # fireworks
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
+
+    # upstage
+    "solar": "upstage",
+
+    # Actual Computer
+    "actual-computer": "actual",
+    "actualcomputer": "actual",
+    "aci": "actual",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "ollama-cloud",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -247,11 +411,22 @@ ALIASES: Dict[str, str] = {
 # not in the catalog.
 
 _LABEL_OVERRIDES: Dict[str, str] = {
+    "moa": "Mixture of Agents",
     "nous": "Nous Portal",
-    "openai-codex": "OpenAI Codex",
+    "openai-codex": "ChatGPT or Codex Subscription",
     "copilot-acp": "GitHub Copilot ACP",
+    "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
+    "gmi": "GMI Cloud",
+    "upstage": "Upstage Solar",
+    "actual": "Actual Computer",
+    "tencent-tokenhub": "Tencent TokenHub",
+    "lmstudio": "LM Studio",
     "local": "Local endpoint",
+    "bedrock": "AWS Bedrock",
+    "vertex": "Google Vertex AI",
+    "ollama-cloud": "Ollama Cloud",
+    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 
@@ -261,6 +436,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -276,13 +452,17 @@ def normalize_provider(name: str) -> str:
     return ALIASES.get(key, key)
 
 
-def get_provider(name: str) -> Optional[ProviderDef]:
-    """Look up a provider by id or alias, merging all data sources.
+def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:
+    """Look up a built-in provider by id or alias.
 
     Resolution order:
       1. Hermes overlays (for providers not in models.dev: nous, openai-codex, etc.)
       2. models.dev catalog + Hermes overlay
-      3. User-defined providers from config (TODO: Phase 4)
+
+    User-defined providers from config.yaml (``providers:`` / ``custom_providers:``)
+    are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
+    and ``resolve_custom_provider`` on top of this function. Callers that need
+    user-config support should use ``resolve_provider_full`` instead.
 
     Returns a fully-resolved ProviderDef or None.
     """
@@ -291,7 +471,13 @@ def get_provider(name: str) -> Optional[ProviderDef]:
     # Try to get models.dev data
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
-        mdev_info = _mdev_provider(canonical)
+        # Keep the single-argument call on the default path: test sites
+        # monkeypatch get_provider_info with single-arg lambdas.
+        mdev_info = (
+            _mdev_provider(canonical)
+            if allow_network
+            else _mdev_provider(canonical, allow_network=False)
+        )
     except Exception:
         mdev_info = None
 
@@ -362,29 +548,158 @@ def get_label(provider_id: str) -> str:
 
 def is_aggregator(provider: str) -> bool:
     """Return True when the provider is a multi-model aggregator."""
-    pdef = get_provider(provider)
+    provider_norm = normalize_provider(provider or "")
+    if provider_norm.startswith("custom:"):
+        return True
+    pdef = get_provider(provider_norm)
     return pdef.is_aggregator if pdef else False
 
 
-def determine_api_mode(provider: str, base_url: str = "") -> str:
+# Flat-namespace resellers (e.g. opencode-go, opencode-zen) are flagged
+# ``is_aggregator=True`` because their live ``/v1/models`` returns bare model
+# IDs ("deepseek-v4-flash") rather than ``vendor/model`` routing slugs — the
+# model-switch resolver relies on that flag to search their flat catalog
+# (see model_switch.py step d). But they are NOT routing aggregators: every
+# model they list is a first-party model served under their own subscription,
+# not a passthrough route to another provider's endpoint. The picker dedup
+# (build_models_payload) must treat them differently from true routers like
+# OpenRouter — a reseller's first-party "minimax-m3" must never be stripped
+# just because a user's custom proxy also happens to serve a same-named model.
+_FLAT_NAMESPACE_RESELLERS: frozenset[str] = frozenset({
+    # Use normalized provider IDs: normalize_provider("opencode-zen") -> "opencode".
+    "opencode-go",
+    "opencode",
+})
+
+
+def is_routing_aggregator(provider: str) -> bool:
+    """Return True only for TRUE routing aggregators (e.g. OpenRouter, named
+    ``custom:*`` proxies) — those that route bare/vendor-slugged model names
+    to *other* providers' endpoints.
+
+    Distinct from :func:`is_aggregator`, which also reports True for
+    flat-namespace resellers (opencode-go/zen) whose catalog is entirely
+    first-party. Use this gate when the question is "would selecting this
+    model silently re-route the call away from the user's intended provider?"
+    — i.e. the picker dedup. Resellers answer no: their listed models are
+    their own, so their rows must not be deduped against user proxies.
+    """
+    provider_norm = normalize_provider(provider or "")
+    if provider_norm in _FLAT_NAMESPACE_RESELLERS:
+        return False
+    return is_aggregator(provider_norm)
+
+
+def is_official_openai_host(base_url: str) -> bool:
+    """True when *base_url* points at OpenAI's official API host family.
+
+    Matches the canonical host (``api.openai.com``) and OpenAI's documented
+    data-residency / regional hosts (``us.api.openai.com``,
+    ``eu.api.openai.com``, and any future ``<region>.api.openai.com``) —
+    those serve the same API surface with the same transport requirements
+    and the same access-scoped ``/v1/models`` listing.
+
+    Hostname-parsed matching only — never substring — so lookalike hosts
+    (``api.openai.com.attacker.test``) and path-segment spoofs
+    (``proxy.test/api.openai.com/v1``) are rejected. A genuine
+    ``*.api.openai.com`` subdomain requires control of openai.com DNS, so
+    the dot-suffix match does not reopen the #32243 spoofing hole.
+    Delegates to ``utils.base_url_host_matches``, which owns the
+    exact-or-dot-suffix hostname contract (userinfo/port stripped,
+    lowercased, trailing dot removed) — one implementation, not two.
+    """
+    return base_url_host_matches(base_url, "api.openai.com")
+
+
+def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
+    """Return the wire protocol a specific endpoint *requires*, or None.
+
+    Some hosts only accept one API mode and reject the others outright:
+      - api.openai.com only accepts the Responses API for its (reasoning)
+        models when tools + reasoning are in play (chat/completions 400s).
+      - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
+      - Kimi's ``/coding`` endpoint speaks native Messages.
+      - AWS Bedrock runtime hosts speak Converse.
+
+    These are *mandatory* — a session carrying a stale api_mode (e.g. a
+    /model switch that kept the previous provider's ``chat_completions``)
+    must be overridden to the host's required mode, not merely filled in
+    when empty. Generic / unknown endpoints return None so an explicitly
+    configured api_mode on them is never clobbered.
+    """
+    if not base_url:
+        return None
+    url_lower = base_url.rstrip("/").lower()
+    hostname = base_url_hostname(base_url)
+    # Exact-hostname matching only — never bare substring — so lookalike hosts
+    # (api.openai.com.attacker.test) and path-segment spoofs
+    # (proxy.test/api.openai.com/v1) are NOT treated as the real endpoint. (#32243)
+    if hostname == "api.kimi.com" and "/coding" in url_lower:
+        return "anthropic_messages"
+    if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
+        return "anthropic_messages"
+    # Official OpenAI host family: canonical + data-residency regional hosts
+    # (us./eu.api.openai.com) all mandate the Responses API for reasoning
+    # models with tools. Shared predicate keeps this lane in lockstep with
+    # catalog filtering and listing authority.
+    if is_official_openai_host(base_url):
+        return "codex_responses"
+    if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
+        return "bedrock_converse"
+    return None
+
+
+def nous_api_mode(model: str = "") -> str:
+    """Resolve the wire protocol for a Nous Portal model.
+
+    Portal serves its ``anthropic/*`` catalog on a native Anthropic Messages
+    route (``/v1/messages``) alongside the OpenAI-compatible
+    ``/v1/chat/completions`` used by every other model it proxies.  Claude
+    traffic goes to the native route so it gets Anthropic's own request shape
+    (inner-block ``cache_control`` breakpoints, thinking blocks) instead of the
+    OpenAI-wire translation.
+
+    When *model* is empty/unknown, defaults to ``chat_completions`` — the
+    historical Nous transport — so callers that don't yet know the model
+    stay on the safer OpenAI-compatible path.
+    """
+    if str(model or "").strip().lower().startswith("anthropic/"):
+        return "anthropic_messages"
+    return "chat_completions"
+
+
+def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
     Resolution order:
-      1. Known provider → transport → TRANSPORT_TO_API_MODE.
-      2. URL heuristics for unknown / custom providers.
-      3. Default: 'chat_completions'.
+      1. Host-mandated mode (special endpoints that only accept one protocol).
+      2. Nous Portal dual-wire (model-derived; overlay alone is openai_chat).
+      3. Known provider → transport → TRANSPORT_TO_API_MODE.
+      4. Direct provider checks (bedrock).
+      5. Default: 'chat_completions'.
+
+    *model* is optional but required for dual-wire providers (Nous) whose
+    transport depends on the catalog id, not just the provider/host.
     """
+    mandated = host_mandated_api_mode(base_url)
+    if mandated is not None:
+        return mandated
+
+    # Nous is dual-wire: anthropic/* → Messages, everything else →
+    # chat_completions. The Hermes overlay still advertises openai_chat
+    # (the majority of the Portal catalog), so the transport lookup below
+    # would pin Claude on the wrong wire without this carve-out.
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm in {"nous", "nous-portal", "nousresearch"}:
+        return nous_api_mode(model)
+
     pdef = get_provider(provider)
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
-    # URL-based heuristics for custom / unknown providers
-    if base_url:
-        url_lower = base_url.rstrip("/").lower()
-        if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
-            return "anthropic_messages"
-        if "api.openai.com" in url_lower:
-            return "codex_responses"
+    # Direct provider checks for providers not in HERMES_OVERLAYS
+    if provider == "bedrock":
+        return "bedrock_converse"
 
     return "chat_completions"
 
@@ -430,14 +745,36 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
-def custom_provider_slug(display_name: str) -> str:
-    """Build a canonical slug for a custom_providers entry.
+def custom_provider_slug(display_name: str, provider_key: str = "") -> str:
+    """Build the stable ``custom:`` identity for a configured provider.
 
-    Matches the convention used by runtime_provider and credential_pool
-    (``custom:<normalized-name>``).  Centralised here so all call-sites
-    produce identical slugs.
+    Keyed ``providers:`` entries keep their config key as the durable
+    identity even when their display name changes. Legacy
+    ``custom_providers:`` entries have no key, so their normalized display
+    name remains the identity.
     """
-    return "custom:" + display_name.strip().lower().replace(" ", "-")
+    identity = str(provider_key or "").strip() or str(display_name or "").strip()
+    normalized = identity.lower().replace(" ", "-")
+    return normalized if normalized.startswith("custom:") else f"custom:{normalized}"
+
+
+def custom_provider_aliases(
+    display_name: str,
+    provider_key: str = "",
+) -> frozenset[str]:
+    """Return every current and legacy identity accepted for one endpoint."""
+    aliases: set[str] = set()
+    for value in (display_name, provider_key):
+        raw = str(value or "").strip().lower()
+        if not raw:
+            continue
+        normalized = raw.replace(" ", "-")
+        aliases.update({raw, normalized, custom_provider_slug(normalized)})
+        if normalized.startswith("custom:"):
+            suffix = normalized.split(":", 1)[1]
+            if suffix:
+                aliases.update({suffix, f"custom:{normalized}"})
+    return frozenset(aliases)
 
 
 def resolve_custom_provider(
@@ -451,6 +788,12 @@ def resolve_custom_provider(
     requested = (name or "").strip().lower()
     if not requested:
         return None
+
+    # If the stored provider is the bare string "custom" (corrupt state
+    # from a prior model-switch bug), fall back to the first custom
+    # provider entry so existing configs self-heal.  (GH #17478)
+    bare_custom_fallback = requested == "custom"
+    first_valid: Optional[Tuple[str, str, Tuple[str, ...], str]] = None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -466,16 +809,45 @@ def resolve_custom_provider(
         if not display_name or not api_url:
             continue
 
-        slug = custom_provider_slug(display_name)
-        if requested not in {display_name.lower(), slug}:
+        key_env = (entry.get("key_env") or "").strip()
+        provider_key = (entry.get("provider_key") or "").strip()
+        env_vars: List[str] = []
+        if key_env:
+            env_vars.append(key_env)
+
+        # Stash the first valid entry for bare-"custom" fallback
+        if first_valid is None:
+            first_valid = (
+                display_name,
+                api_url,
+                tuple(env_vars),
+                custom_provider_slug(display_name, provider_key),
+            )
+
+        slug = custom_provider_slug(display_name, provider_key)
+        if requested not in custom_provider_aliases(display_name, provider_key):
             continue
 
         return ProviderDef(
             id=slug,
             name=display_name,
             transport="openai_chat",
-            api_key_env_vars=(),
+            api_key_env_vars=tuple(env_vars),
             base_url=api_url,
+            is_aggregator=False,
+            auth_type="api_key",
+            source="user-config",
+        )
+
+    # Self-heal: bare "custom" matched nothing — return first valid entry
+    if bare_custom_fallback and first_valid:
+        dname, aurl, denv, slug = first_valid
+        return ProviderDef(
+            id=slug,
+            name=dname,
+            transport="openai_chat",
+            api_key_env_vars=denv,
+            base_url=aurl,
             is_aggregator=False,
             auth_type="api_key",
             source="user-config",
@@ -502,6 +874,50 @@ def resolve_provider_full(
         ProviderDef if found, else None.
     """
     canonical = normalize_provider(name)
+    raw = name.strip().lower()
+
+    # 0. User-defined config providers win over the built-in alias table.
+    #    A user who declares ``providers.<name>`` in config.yaml has stated
+    #    explicit intent for that name — it must not be hijacked by a legacy
+    #    vendor alias (e.g. bare "openai" → "openrouter"). Resolve the raw
+    #    name against user config FIRST so a configured ``providers.openai``
+    #    (pointing at api.openai.com) beats the alias that would otherwise
+    #    silently route to OpenRouter. Only the raw (pre-alias) name is tried
+    #    here; canonical/alias resolution still happens below.
+    if user_providers:
+        user_pdef = resolve_user_provider(raw, user_providers)
+        if user_pdef is not None:
+            return user_pdef
+
+    # 0.5 Exact Hermes provider IDs must win over LOSSY alias collapsing.
+    # Example: kimi-coding-cn should stay distinct from kimi-coding instead of
+    # normalizing through the shared models.dev alias "kimi-for-coding".
+    # A collapse is lossy only when MULTIPLE distinct registry providers
+    # normalize to the same canonical name — resolving through the alias
+    # would then lose which one the caller meant. Single-entry rewrites
+    # (e.g. "copilot" → "github-copilot") are correct routing and must keep
+    # resolving through the built-in chain below so overlay transports apply.
+    if canonical != raw:
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+            _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
+            if _pcfg is not None:
+                _collapsed_siblings = [
+                    _rid
+                    for _rid in _AUTH_PROVIDER_REGISTRY
+                    if normalize_provider(_rid) == canonical
+                ]
+                if len(_collapsed_siblings) > 1:
+                    return ProviderDef(
+                        id=_pcfg.id,
+                        name=_pcfg.name,
+                        transport="openai_chat",
+                        api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()),
+                        base_url=_pcfg.inference_base_url or "",
+                        source="hermes-auth-registry",
+                    )
+        except Exception:
+            pass
 
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
@@ -515,7 +931,7 @@ def resolve_provider_full(
         if user_pdef is not None:
             return user_pdef
         # Try original name (in case alias didn't match)
-        user_pdef = resolve_user_provider(name.strip().lower(), user_providers)
+        user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
 

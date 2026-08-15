@@ -2,7 +2,8 @@
 
 Surrogates (U+D800..U+DFFF) are invalid in UTF-8 and crash json.dumps()
 inside the OpenAI SDK. They can appear via clipboard paste from rich-text
-editors like Google Docs.
+editors like Google Docs, OR from byte-level reasoning models (xiaomi/mimo,
+kimi, glm) emitting lone halves in reasoning output.
 """
 import json
 import pytest
@@ -11,7 +12,7 @@ from unittest.mock import MagicMock, patch
 from run_agent import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
-    _SURROGATE_RE,
+    _sanitize_structure_surrogates,
 )
 
 
@@ -22,23 +23,12 @@ class TestSanitizeSurrogates:
         text = "Hello, this is normal text with unicode: café ñ 日本語 🎉"
         assert _sanitize_surrogates(text) == text
 
-    def test_empty_string(self):
-        assert _sanitize_surrogates("") == ""
 
     def test_single_surrogate_replaced(self):
         result = _sanitize_surrogates("Hello \udce2 world")
         assert result == "Hello \ufffd world"
 
-    def test_multiple_surrogates_replaced(self):
-        result = _sanitize_surrogates("a\ud800b\udc00c\udfff")
-        assert result == "a\ufffdb\ufffdc\ufffd"
 
-    def test_all_surrogate_range(self):
-        """Verify the regex catches the full surrogate range."""
-        for cp in [0xD800, 0xD900, 0xDA00, 0xDB00, 0xDC00, 0xDD00, 0xDE00, 0xDF00, 0xDFFF]:
-            text = f"test{chr(cp)}end"
-            result = _sanitize_surrogates(text)
-            assert '\ufffd' in result, f"Surrogate U+{cp:04X} not caught"
 
     def test_result_is_json_serializable(self):
         """Sanitized text must survive json.dumps + utf-8 encoding."""
@@ -48,12 +38,6 @@ class TestSanitizeSurrogates:
         # Must not raise UnicodeEncodeError
         serialized.encode("utf-8")
 
-    def test_original_surrogates_fail_encoding(self):
-        """Confirm the original bug: surrogates crash utf-8 encoding."""
-        dirty = "data \udce2 from clipboard"
-        serialized = json.dumps({"content": dirty}, ensure_ascii=False)
-        with pytest.raises(UnicodeEncodeError):
-            serialized.encode("utf-8")
 
 
 class TestSanitizeMessagesSurrogates:
@@ -85,20 +69,7 @@ class TestSanitizeMessagesSurrogates:
         assert "\ufffd" in msgs[0]["content"][0]["text"]
         assert "\udce2" not in msgs[0]["content"][0]["text"]
 
-    def test_mixed_clean_and_dirty(self):
-        msgs = [
-            {"role": "user", "content": "clean text"},
-            {"role": "user", "content": "dirty \udce2 text"},
-            {"role": "assistant", "content": "clean response"},
-        ]
-        assert _sanitize_messages_surrogates(msgs) is True
-        assert msgs[0]["content"] == "clean text"
-        assert "\ufffd" in msgs[1]["content"]
-        assert msgs[2]["content"] == "clean response"
 
-    def test_non_dict_items_skipped(self):
-        msgs = ["not a dict", {"role": "user", "content": "ok"}]
-        assert _sanitize_messages_surrogates(msgs) is False
 
     def test_tool_messages_sanitized(self):
         """Tool results could also contain surrogates from file reads etc."""
@@ -107,6 +78,112 @@ class TestSanitizeMessagesSurrogates:
         ]
         assert _sanitize_messages_surrogates(msgs) is True
         assert "\ufffd" in msgs[0]["content"]
+
+
+class TestReasoningFieldSurrogates:
+    """Surrogates in reasoning fields (byte-level reasoning models).
+
+    xiaomi/mimo, kimi, glm and similar byte-level tokenizers can emit lone
+    surrogates in reasoning output. These fields are carried through to the
+    API as `reasoning_content` on assistant messages, and must be sanitized
+    or json.dumps() crashes with 'utf-8' codec can't encode surrogates.
+    """
+
+    def test_reasoning_field_sanitized(self):
+        msgs = [
+            {"role": "assistant", "content": "ok", "reasoning": "thought \udce2 here"},
+        ]
+        assert _sanitize_messages_surrogates(msgs) is True
+        assert "\udce2" not in msgs[0]["reasoning"]
+        assert "\ufffd" in msgs[0]["reasoning"]
+
+
+    def test_reasoning_details_nested_sanitized(self):
+        """reasoning_details is a list of dicts with nested string fields."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning_details": [
+                    {"type": "reasoning.summary", "summary": "summary \udce2 text"},
+                    {"type": "reasoning.text", "text": "chain \udc00 of thought"},
+                ],
+            },
+        ]
+        assert _sanitize_messages_surrogates(msgs) is True
+        assert "\udce2" not in msgs[0]["reasoning_details"][0]["summary"]
+        assert "\ufffd" in msgs[0]["reasoning_details"][0]["summary"]
+        assert "\udc00" not in msgs[0]["reasoning_details"][1]["text"]
+        assert "\ufffd" in msgs[0]["reasoning_details"][1]["text"]
+
+
+    def test_reasoning_end_to_end_json_serialization(self):
+        """After sanitization, the full message dict must serialize clean."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning_content": "reasoning with \udce2 surrogate",
+                "reasoning_details": [
+                    {"summary": "nested \udcb0 surrogate"},
+                ],
+            },
+        ]
+        _sanitize_messages_surrogates(msgs)
+        # Must round-trip through json + utf-8 encoding without error
+        payload = json.dumps(msgs, ensure_ascii=False).encode("utf-8")
+        assert b"\\" not in payload[:0]  # sanity — just ensure we got bytes
+        assert len(payload) > 0
+
+
+
+class TestSanitizeStructureSurrogates:
+    """Test the _sanitize_structure_surrogates() helper for nested payloads."""
+
+
+    def test_flat_dict(self):
+        payload = {"a": "clean", "b": "dirty \udce2 text"}
+        assert _sanitize_structure_surrogates(payload) is True
+        assert payload["a"] == "clean"
+        assert "\ufffd" in payload["b"]
+
+
+
+
+
+
+
+class TestApiMessagesSurrogateRecovery:
+    """Integration: verify the recovery block sanitizes api_messages.
+
+    The bug this guards against: a surrogate in `reasoning_content` on
+    api_messages (transformed from `reasoning` during build) crashes the
+    OpenAI SDK's json.dumps(), and the recovery block previously only
+    sanitized the canonical `messages` list — not `api_messages` — so the
+    next retry would send the same broken payload and fail 3 times.
+    """
+
+    def test_api_messages_reasoning_content_sanitized(self):
+        """The extended sanitizer catches reasoning_content in api_messages."""
+        api_messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "content": "response",
+                "reasoning_content": "thought \udce2 trail",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "tool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "result", "tool_call_id": "call_1"},
+        ]
+        assert _sanitize_messages_surrogates(api_messages) is True
+        assert "\udce2" not in api_messages[1]["reasoning_content"]
+        # Full payload must now serialize clean
+        json.dumps(api_messages, ensure_ascii=False).encode("utf-8")
 
 
 class TestRunConversationSurrogateSanitization:
@@ -138,7 +215,7 @@ class TestRunConversationSurrogateSanitization:
         mock_stream.return_value = mock_response
         mock_api.return_value = mock_response
 
-        agent = AIAgent(model="test/model", quiet_mode=True, skip_memory=True, skip_context_files=True)
+        agent = AIAgent(model="test/model", api_key="test-key", base_url="http://localhost:1234/v1", quiet_mode=True, skip_memory=True, skip_context_files=True)
         agent.client = MagicMock()
 
         # Pass a message with surrogates

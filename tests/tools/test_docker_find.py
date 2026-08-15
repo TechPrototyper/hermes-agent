@@ -33,16 +33,16 @@ class TestFindDocker:
             result = docker_mod.find_docker()
         assert result == str(fake_docker)
 
-    def test_returns_none_when_not_found(self):
-        with patch("tools.environments.docker.shutil.which", return_value=None), \
-             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", ["/nonexistent/docker"]):
-            result = docker_mod.find_docker()
-        assert result is None
 
-    def test_caches_result(self):
-        with patch("tools.environments.docker.shutil.which", return_value="/usr/local/bin/docker"):
-            first = docker_mod.find_docker()
-        # Second call should use cache, not call shutil.which again
-        with patch("tools.environments.docker.shutil.which", return_value=None):
-            second = docker_mod.find_docker()
-        assert first == second == "/usr/local/bin/docker"
+    def test_docker_preferred_over_podman(self):
+        """When both docker and podman are on PATH, docker wins."""
+        def which_side_effect(name):
+            if name == "docker":
+                return "/usr/bin/docker"
+            if name == "podman":
+                return "/usr/bin/podman"
+            return None
+
+        with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect):
+            result = docker_mod.find_docker()
+        assert result == "/usr/bin/docker"

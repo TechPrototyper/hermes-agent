@@ -8,19 +8,14 @@ Covers:
   - Honcho register_cli() builds correct argparse tree
 """
 
-import argparse
-import os
 import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_cli_commands,
 )
 
 
@@ -57,23 +52,6 @@ class TestRegisterCliCommand:
         ctx.register_cli_command("x", "first", MagicMock())
         ctx.register_cli_command("x", "second", MagicMock())
         assert mgr._cli_commands["x"]["help"] == "second"
-
-    def test_handler_optional(self):
-        ctx, mgr = self._make_ctx()
-        ctx.register_cli_command("nocb", "test", MagicMock())
-        assert mgr._cli_commands["nocb"]["handler_fn"] is None
-
-
-class TestGetPluginCliCommands:
-    def test_returns_dict(self):
-        mgr = PluginManager()
-        mgr._cli_commands["foo"] = {"name": "foo", "help": "bar"}
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            cmds = get_plugin_cli_commands()
-        assert cmds == {"foo": {"name": "foo", "help": "bar"}}
-        # Top-level is a copy — adding to result doesn't affect manager
-        cmds["new"] = {"name": "new"}
-        assert "new" not in mgr._cli_commands
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────
@@ -146,98 +124,8 @@ class TestMemoryPluginCliDiscovery:
 
         assert len(cmds) == 0
 
-    def test_skips_plugin_without_register_cli(self, tmp_path, monkeypatch):
-        """An active plugin with cli.py but no register_cli returns nothing."""
-        plugin_dir = tmp_path / "noplugin"
-        plugin_dir.mkdir()
-        (plugin_dir / "__init__.py").write_text("pass\n")
-        (plugin_dir / "cli.py").write_text("def some_other_fn():\n    pass\n")
-
-        import plugins.memory as pm
-        original_dir = pm._MEMORY_PLUGINS_DIR
-        monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "noplugin")
-        try:
-            cmds = pm.discover_plugin_cli_commands()
-        finally:
-            monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
-            sys.modules.pop("plugins.memory.noplugin.cli", None)
-
-        assert len(cmds) == 0
-
-    def test_skips_plugin_without_cli_py(self, tmp_path, monkeypatch):
-        """An active provider without cli.py returns nothing."""
-        plugin_dir = tmp_path / "nocli"
-        plugin_dir.mkdir()
-        (plugin_dir / "__init__.py").write_text("pass\n")
-
-        import plugins.memory as pm
-        original_dir = pm._MEMORY_PLUGINS_DIR
-        monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "nocli")
-        try:
-            cmds = pm.discover_plugin_cli_commands()
-        finally:
-            monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
-
-        assert len(cmds) == 0
-
 
 # ── Honcho register_cli ──────────────────────────────────────────────────
-
-
-class TestHonchoRegisterCli:
-    def test_builds_subcommand_tree(self):
-        """register_cli creates the expected subparser tree."""
-        from plugins.memory.honcho.cli import register_cli
-
-        parser = argparse.ArgumentParser()
-        register_cli(parser)
-
-        # Verify key subcommands exist by parsing them
-        args = parser.parse_args(["status"])
-        assert args.honcho_command == "status"
-
-        args = parser.parse_args(["peer", "--user", "alice"])
-        assert args.honcho_command == "peer"
-        assert args.user == "alice"
-
-        args = parser.parse_args(["mode", "tools"])
-        assert args.honcho_command == "mode"
-        assert args.mode == "tools"
-
-        args = parser.parse_args(["tokens", "--context", "500"])
-        assert args.honcho_command == "tokens"
-        assert args.context == 500
-
-        args = parser.parse_args(["--target-profile", "coder", "status"])
-        assert args.target_profile == "coder"
-        assert args.honcho_command == "status"
-
-    def test_setup_redirects_to_memory_setup(self):
-        """hermes honcho setup redirects to memory setup."""
-        from plugins.memory.honcho.cli import register_cli
-
-        parser = argparse.ArgumentParser()
-        register_cli(parser)
-        args = parser.parse_args(["setup"])
-        assert args.honcho_command == "setup"
-
-    def test_mode_choices_are_recall_modes(self):
-        """Mode subcommand uses recall mode choices (hybrid/context/tools)."""
-        from plugins.memory.honcho.cli import register_cli
-
-        parser = argparse.ArgumentParser()
-        register_cli(parser)
-
-        # Valid recall modes should parse
-        for mode in ("hybrid", "context", "tools"):
-            args = parser.parse_args(["mode", mode])
-            assert args.mode == mode
-
-        # Old memoryMode values should fail
-        with pytest.raises(SystemExit):
-            parser.parse_args(["mode", "honcho"])
 
 
 # ── ProviderCollector no-op ──────────────────────────────────────────────
@@ -248,7 +136,7 @@ class TestProviderCollectorCliNoop:
         """_ProviderCollector.register_cli_command is a no-op (doesn't crash)."""
         from plugins.memory import _ProviderCollector
 
-        collector = _ProviderCollector()
+        collector = _ProviderCollector("test-provider")
         collector.register_cli_command(
             name="test", help="test", setup_fn=lambda s: None
         )

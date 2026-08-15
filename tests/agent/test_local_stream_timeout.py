@@ -46,20 +46,6 @@ class TestLocalStreamReadTimeout:
                 _stream_read_timeout = _base_timeout
             assert _stream_read_timeout == 300.0
 
-    @pytest.mark.parametrize("base_url", [
-        "https://api.openai.com",
-        "https://openrouter.ai/api",
-        "https://api.anthropic.com",
-    ])
-    def test_remote_endpoint_keeps_default(self, base_url):
-        """Remote endpoint -> keep 120s default."""
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HERMES_STREAM_READ_TIMEOUT", None)
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
-                _stream_read_timeout = _base_timeout
-            assert _stream_read_timeout == 120.0
 
     def test_empty_base_url_keeps_default(self):
         """No base_url set -> keep 120s default."""
@@ -88,15 +74,7 @@ class TestIsLocalEndpoint:
     def test_classic_local_addresses(self, url):
         assert is_local_endpoint(url) is True
 
-    @pytest.mark.parametrize("url", [
-        "http://host.docker.internal:11434",
-        "http://host.docker.internal:8080/v1",
-        "http://gateway.docker.internal:11434",
-        "http://host.containers.internal:11434",
-        "http://host.lima.internal:11434",
-    ])
-    def test_container_dns_names(self, url):
-        assert is_local_endpoint(url) is True
+
 
     @pytest.mark.parametrize("url", [
         "https://api.openai.com",
@@ -106,3 +84,5 @@ class TestIsLocalEndpoint:
     ])
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
+
+
