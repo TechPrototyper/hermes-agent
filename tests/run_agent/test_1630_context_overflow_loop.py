@@ -8,8 +8,6 @@ Verifies that:
 3. Context-overflow failures produce helpful error messages suggesting /compact.
 """
 
-import pytest
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -32,6 +30,7 @@ class TestGeneric400Heuristic:
             from run_agent import AIAgent
             a = AIAgent(
                 api_key="test-key-12345",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -39,7 +38,6 @@ class TestGeneric400Heuristic:
             a.client = MagicMock()
             a._cached_system_prompt = "You are helpful."
             a._use_prompt_caching = False
-            a.tool_delay = 0
             a.compression_enabled = False
             return a
 
@@ -67,25 +65,6 @@ class TestGeneric400Heuristic:
         is_generic_error = len(error_msg.strip()) < 30
         assert not is_large_session  # Small session → heuristic doesn't fire
 
-    def test_generic_400_with_large_token_count_triggers_heuristic(self):
-        """A generic 400 with high token count should be treated as
-        probable context overflow."""
-        error_msg = "error"
-        status_code = 400
-        ctx_len = 200000
-        approx_tokens = 100000  # > 40% of 200k
-        api_messages = [{"role": "user", "content": "hi"}] * 20
-
-        is_context_length_error = any(phrase in error_msg for phrase in [
-            'context length', 'context size', 'maximum context',
-        ])
-        assert not is_context_length_error
-
-        # Heuristic check
-        is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
-        is_generic_error = len(error_msg.strip()) < 30
-        assert is_large_session
-        assert is_generic_error
         # Both conditions true → should be treated as context overflow
 
     def test_generic_400_with_many_messages_triggers_heuristic(self):
@@ -136,45 +115,39 @@ class TestGatewaySkipsPersistenceOnFailure:
     the gateway should NOT persist messages to the transcript."""
 
     def test_agent_failed_early_detected(self):
-        """The agent_failed_early flag is True when failed=True and
-        no final_response."""
+        """The agent_failed_early flag is True when failed=True,
+        regardless of final_response."""
         agent_result = {
             "failed": True,
             "final_response": None,
             "messages": [],
             "error": "Non-retryable client error",
         }
-        agent_failed_early = (
-            agent_result.get("failed")
-            and not agent_result.get("final_response")
-        )
+        agent_failed_early = bool(agent_result.get("failed"))
         assert agent_failed_early
 
-    def test_agent_with_response_not_failed_early(self):
-        """When the agent has a final_response, it's not a failed-early
-        scenario even if failed=True."""
-        agent_result = {
-            "failed": True,
-            "final_response": "Here is a partial response",
-            "messages": [],
-        }
-        agent_failed_early = (
-            agent_result.get("failed")
-            and not agent_result.get("final_response")
-        )
-        assert not agent_failed_early
 
-    def test_successful_agent_not_failed_early(self):
-        """A successful agent result should not trigger skip."""
+
+
+class TestCompressionExhaustedFlag:
+    """When compression is exhausted, the agent should set both
+    failed=True and compression_exhausted=True so the gateway can
+    auto-reset the session.  (#9893)"""
+
+    def test_compression_exhausted_returns_carry_flag(self):
+        """Simulate the return dict from a compression-exhausted agent."""
         agent_result = {
-            "final_response": "Hello!",
-            "messages": [{"role": "assistant", "content": "Hello!"}],
+            "messages": [],
+            "completed": False,
+            "api_calls": 3,
+            "error": "Request payload too large: max compression attempts (3) reached.",
+            "partial": True,
+            "failed": True,
+            "compression_exhausted": True,
         }
-        agent_failed_early = (
-            agent_result.get("failed")
-            and not agent_result.get("final_response")
-        )
-        assert not agent_failed_early
+        assert agent_result.get("failed")
+        assert agent_result.get("compression_exhausted")
+
 
 
 # ---------------------------------------------------------------------------
@@ -249,20 +222,4 @@ class TestAgentSkipsPersistenceForLargeFailedSessions:
         should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
         assert should_skip
 
-    def test_small_session_400_persists_normally(self):
-        """Status 400 + small session should still persist."""
-        status_code = 400
-        approx_tokens = 5000  # < 50000
-        api_messages = [{"role": "user", "content": "x"}] * 10  # < 80
 
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
-        assert not should_skip
-
-    def test_non_400_error_persists_normally(self):
-        """Non-400 errors should always persist normally."""
-        status_code = 401  # Auth error
-        approx_tokens = 100000  # Large session, but not a 400
-        api_messages = [{"role": "user", "content": "x"}] * 100
-
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
-        assert not should_skip

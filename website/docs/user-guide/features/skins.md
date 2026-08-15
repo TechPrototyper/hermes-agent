@@ -36,6 +36,8 @@ display:
 | `ares` | War-god theme — crimson and bronze | `Ares Agent` | Deep crimson borders with bronze accents. Aggressive spinner verbs ("forging", "marching", "tempering steel"). Custom sword-and-shield ASCII art banner. |
 | `mono` | Monochrome — clean grayscale | `Hermes Agent` | All grays — no color. Borders are `#555555`, text is `#c9d1d9`. Ideal for minimal terminal setups or screen recordings. |
 | `slate` | Cool blue — developer-focused | `Hermes Agent` | Royal blue borders (`#4169e1`), soft blue text. Calm and professional. No custom spinner — uses default faces. |
+| `daylight` | Light theme for bright terminals with dark text and cool blue accents | `Hermes Agent` | Designed for white or bright terminals. Dark slate text with blue borders, pale status surfaces, and a light completion menu that stays readable in light terminal profiles. |
+| `warm-lightmode` | Warm brown/gold text for light terminal backgrounds | `Hermes Agent` | Warm parchment tones for light terminals. Dark brown text with saddle-brown accents, cream-colored status surfaces. An earthy alternative to the cooler daylight theme. |
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
@@ -54,7 +56,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `banner_dim` | Muted text in the banner (separators, secondary labels) | `#B8860B` (dark goldenrod) |
 | `banner_text` | Body text in the banner (tool names, skill names) | `#FFF8DC` (cornsilk) |
 | `ui_accent` | General UI accent color (highlights, active elements) | `#FFBF00` |
-| `ui_label` | UI labels and tags | `#4dd0e1` (teal) |
+| `ui_label` | UI labels and tags | `#DAA520` (goldenrod) |
 | `ui_ok` | Success indicators (checkmarks, completion) | `#4caf50` (green) |
 | `ui_error` | Error indicators (failures, blocked) | `#ef5350` (red) |
 | `ui_warn` | Warning indicators (caution, approval prompts) | `#ffa726` (orange) |
@@ -63,6 +65,13 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `response_border` | Border around the agent's response box (ANSI escape) | `#FFD700` |
 | `session_label` | Session label color | `#DAA520` |
 | `session_border` | Session ID dim border color | `#8B8682` |
+| `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
+| `voice_status_bg` | Background color for the voice-mode status badge | `#1a1a2e` |
+| `selection_bg` | Background color for the TUI mouse-selection highlighter. Falls back to `completion_menu_current_bg` when unset. | `#3a3a55` |
+| `completion_menu_bg` | Background color for the completion menu list | `#1a1a2e` |
+| `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
+| `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
+| `completion_menu_meta_current_bg` | Background color for the active completion meta column | `#333355` |
 
 ### Spinner (`spinner:`)
 
@@ -87,7 +96,7 @@ Text strings used throughout the CLI interface.
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
 | `goodbye` | Message shown on exit | `Goodbye! ⚕` |
 | `response_label` | Label on the response box header | ` ⚕ Hermes ` |
-| `prompt_symbol` | Symbol before the user input prompt | `❯ ` |
+| `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
 
 ### Other top-level keys
@@ -129,6 +138,13 @@ colors:
   response_border: "#FFD700"
   session_label: "#DAA520"
   session_border: "#8B8682"
+  status_bar_bg: "#1a1a2e"
+  voice_status_bg: "#1a1a2e"
+  selection_bg: "#333355"
+  completion_menu_bg: "#1a1a2e"
+  completion_menu_current_bg: "#333355"
+  completion_menu_meta_bg: "#1a1a2e"
+  completion_menu_meta_current_bg: "#333355"
 
 spinner:
   waiting_faces:
@@ -153,7 +169,7 @@ branding:
   welcome: "Welcome to My Agent! Type your message or /help for commands."
   goodbye: "See you later! ⚡"
   response_label: " ⚡ My Agent "
-  prompt_symbol: "⚡ ❯ "
+  prompt_symbol: "⚡"
   help_header: "(⚡) Available Commands"
 
 tool_prefix: "┊"
@@ -243,7 +259,7 @@ npm start
 6. Click **Save** to write the skin YAML to `~/.hermes/skins/`.
 7. Click **Activate** to set it as the current skin (updates `display.skin` in `config.yaml`).
 
-Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](/docs/user-guide/profiles) too.
+Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.
 
 ## Operational notes
 

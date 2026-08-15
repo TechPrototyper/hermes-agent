@@ -8,6 +8,16 @@ description: "Set up Hermes Agent as a WhatsApp bot via the built-in Baileys bri
 
 Hermes connects to WhatsApp through a built-in bridge based on **Baileys**. This works by emulating a WhatsApp Web session — **not** through the official WhatsApp Business API. No Meta developer account or Business verification is required.
 
+> Run `hermes gateway setup` and pick **WhatsApp** for a guided walk-through.
+
+:::tip Two WhatsApp integrations
+This page is for the **Baileys bridge** — quick to set up, personal accounts, no public URL needed, ban risk.
+
+If you're running a real business bot and want stability, see the **[WhatsApp Business Cloud API guide](./whatsapp-cloud.md)** instead. It's the official Meta-supported path: no account ban risk, but requires a Meta Business account and a public webhook URL.
+
+The two adapters can also run in parallel against different phone numbers if you have a reason to.
+:::
+
 :::warning Unofficial API — Ban Risk
 WhatsApp does **not** officially support third-party bots outside the Business API. Using a third-party bridge carries a small risk of account restrictions. To minimize risk:
 - **Use a dedicated phone number** for the bot (not your personal number)
@@ -103,9 +113,9 @@ WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with
 
 :::tip Allow-all shorthand
 Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
-This is consistent with [Signal group allowlists](/docs/reference/environment-variables).
+This is consistent with [Signal group allowlists](/reference/environment-variables).
 To use the pairing flow instead, remove both variables and rely on the
-[DM pairing system](/docs/user-guide/security#dm-pairing-system).
+[DM pairing system](/user-guide/security#dm-pairing-system).
 :::
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -170,7 +180,63 @@ Hermes supports voice on WhatsApp:
 whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
+  send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
 ```
+
+When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+---
+
+## Message Formatting & Delivery
+
+WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
+
+### Chunking
+
+Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
+
+### WhatsApp-Compatible Markdown
+
+Standard Markdown in AI responses is automatically converted to WhatsApp's native formatting:
+
+| Markdown | WhatsApp | Renders as |
+|----------|----------|------------|
+| `**bold**` | `*bold*` | **bold** |
+| `~~strikethrough~~` | `~strikethrough~` | ~~strikethrough~~ |
+| `# Heading` | `*Heading*` | Bold text (no native headings) |
+| `[link text](url)` | `link text (url)` | Inline URL |
+
+Code blocks and inline code are preserved as-is since WhatsApp supports triple-backtick formatting natively.
+
+### Tool Progress
+
+When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
+
+### Native Polls, Clarify-as-Poll, and Locations
+
+The Baileys-bridge adapter (bot mode) supports several native WhatsApp message types:
+
+- **Polls** — the agent can send a native WhatsApp poll (question + options) via the bridge's `/send-poll` endpoint. Poll votes flow back into the conversation.
+- **Clarify questions as polls** — when the agent asks a multiple-choice clarify question, it's rendered as a native single-select poll; tapping an option answers the question. If the poll fails to send, the adapter falls back to a plain text question. Approval prompts are **never** mapped onto polls — polls are only used for genuine multiple-choice clarifies.
+- **Location pins** — the agent can send a native location pin (latitude/longitude, optional name/address) via `/send-location`, and incoming shared locations (including live locations) are delivered to the agent as location messages.
+
+All of this works out of the box in bot (Baileys) mode; no configuration needed.
+
+### Message Batching (Debounce)
+
+WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **5s**, extended to **10s** for very long fragments). Tune via `config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        text_batch_delay_seconds: 5.0         # quiet period before flushing a batch
+        text_batch_split_delay_seconds: 10.0  # extended delay near the split threshold
+```
+
+Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
 ---
 

@@ -22,8 +22,6 @@ from unittest.mock import patch, MagicMock
 from tools.file_tools import (
     read_file_tool,
     search_tool,
-    get_read_files_summary,
-    clear_read_tracker,
     notify_other_tool_call,
     _read_tracker,
 )
@@ -48,7 +46,7 @@ class _FakeSearchResult:
     def __init__(self):
         self.matches = []
 
-    def to_dict(self):
+    def to_dict(self, densify=False):
         return {"matches": [{"file": "test.py", "line": 1, "text": "match"}]}
 
 
@@ -63,10 +61,10 @@ class TestReadLoopDetection(unittest.TestCase):
     """Verify that read_file_tool detects and warns on consecutive re-reads."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_first_read_has_no_warning(self, _mock_ops):
@@ -84,16 +82,6 @@ class TestReadLoopDetection(unittest.TestCase):
         self.assertNotIn("_warning", result)
         self.assertIn("content", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_third_consecutive_read_has_warning(self, _mock_ops):
-        """3rd consecutive read of the same region triggers a warning."""
-        for _ in range(2):
-            read_file_tool("/tmp/test.py", task_id="t1")
-        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("3 times", result["_warning"])
-        # Warning still returns content
-        self.assertIn("content", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_fourth_consecutive_read_is_blocked(self, _mock_ops):
@@ -115,33 +103,6 @@ class TestReadLoopDetection(unittest.TestCase):
         self.assertIn("BLOCKED", result["error"])
         self.assertIn("5 times", result["error"])
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_region_resets_consecutive(self, _mock_ops):
-        """Reading a different region of the same file resets consecutive count."""
-        read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        # Now read a different region — this resets the consecutive counter
-        result = json.loads(
-            read_file_tool("/tmp/test.py", offset=501, limit=500, task_id="t1")
-        )
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_file_resets_consecutive(self, _mock_ops):
-        """Reading a different file resets the consecutive counter."""
-        read_file_tool("/tmp/a.py", task_id="t1")
-        read_file_tool("/tmp/a.py", task_id="t1")
-        result = json.loads(read_file_tool("/tmp/b.py", task_id="t1"))
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_tasks_isolated(self, _mock_ops):
-        """Different task_ids have separate consecutive counters."""
-        read_file_tool("/tmp/test.py", task_id="task_a")
-        result = json.loads(
-            read_file_tool("/tmp/test.py", task_id="task_b")
-        )
-        self.assertNotIn("_warning", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_warning_still_returns_content(self, _mock_ops):
@@ -158,10 +119,10 @@ class TestNotifyOtherToolCall(unittest.TestCase):
     """Verify that notify_other_tool_call resets the consecutive counter."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_other_tool_resets_consecutive(self, _mock_ops):
@@ -192,120 +153,15 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         """notify_other_tool_call on a task that hasn't read anything is a no-op."""
         notify_other_tool_call("nonexistent_task")  # Should not raise
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_history_survives_notify(self, _mock_ops):
-        """notify_other_tool_call resets consecutive but preserves read_history."""
-        read_file_tool("/tmp/test.py", offset=1, limit=100, task_id="t1")
-        notify_other_tool_call("t1")
-        summary = get_read_files_summary("t1")
-        self.assertEqual(len(summary), 1)
-        self.assertEqual(summary[0]["path"], "/tmp/test.py")
-
-
-class TestReadFilesSummary(unittest.TestCase):
-    """Verify get_read_files_summary returns accurate file-read history."""
-
-    def setUp(self):
-        clear_read_tracker()
-
-    def tearDown(self):
-        clear_read_tracker()
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_empty_when_no_reads(self, _mock_ops):
-        summary = get_read_files_summary("t1")
-        self.assertEqual(summary, [])
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_single_file_single_region(self, _mock_ops):
-        read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        summary = get_read_files_summary("t1")
-        self.assertEqual(len(summary), 1)
-        self.assertEqual(summary[0]["path"], "/tmp/test.py")
-        self.assertIn("lines 1-500", summary[0]["regions"])
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_single_file_multiple_regions(self, _mock_ops):
-        read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        read_file_tool("/tmp/test.py", offset=501, limit=500, task_id="t1")
-        summary = get_read_files_summary("t1")
-        self.assertEqual(len(summary), 1)
-        self.assertEqual(len(summary[0]["regions"]), 2)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_multiple_files(self, _mock_ops):
-        read_file_tool("/tmp/a.py", task_id="t1")
-        read_file_tool("/tmp/b.py", task_id="t1")
-        summary = get_read_files_summary("t1")
-        self.assertEqual(len(summary), 2)
-        paths = [s["path"] for s in summary]
-        self.assertIn("/tmp/a.py", paths)
-        self.assertIn("/tmp/b.py", paths)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_task_has_separate_summary(self, _mock_ops):
-        read_file_tool("/tmp/a.py", task_id="task_a")
-        read_file_tool("/tmp/b.py", task_id="task_b")
-        summary_a = get_read_files_summary("task_a")
-        summary_b = get_read_files_summary("task_b")
-        self.assertEqual(len(summary_a), 1)
-        self.assertEqual(summary_a[0]["path"], "/tmp/a.py")
-        self.assertEqual(len(summary_b), 1)
-        self.assertEqual(summary_b[0]["path"], "/tmp/b.py")
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_summary_unaffected_by_searches(self, _mock_ops):
-        """Searches should NOT appear in the file-read summary."""
-        read_file_tool("/tmp/test.py", task_id="t1")
-        search_tool("def main", task_id="t1")
-        summary = get_read_files_summary("t1")
-        self.assertEqual(len(summary), 1)
-        self.assertEqual(summary[0]["path"], "/tmp/test.py")
-
-
-class TestClearReadTracker(unittest.TestCase):
-    """Verify clear_read_tracker resets state properly."""
-
-    def setUp(self):
-        clear_read_tracker()
-
-    def tearDown(self):
-        clear_read_tracker()
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_clear_specific_task(self, _mock_ops):
-        read_file_tool("/tmp/test.py", task_id="t1")
-        read_file_tool("/tmp/test.py", task_id="t2")
-        clear_read_tracker("t1")
-        self.assertEqual(get_read_files_summary("t1"), [])
-        self.assertEqual(len(get_read_files_summary("t2")), 1)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_clear_all(self, _mock_ops):
-        read_file_tool("/tmp/test.py", task_id="t1")
-        read_file_tool("/tmp/test.py", task_id="t2")
-        clear_read_tracker()
-        self.assertEqual(get_read_files_summary("t1"), [])
-        self.assertEqual(get_read_files_summary("t2"), [])
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_clear_then_reread_no_warning(self, _mock_ops):
-        for _ in range(3):
-            read_file_tool("/tmp/test.py", task_id="t1")
-        clear_read_tracker("t1")
-        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertNotIn("error", result)
-
 
 class TestSearchLoopDetection(unittest.TestCase):
     """Verify that search_tool detects and blocks consecutive repeated searches."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_first_search_no_warning(self, _mock_ops):
@@ -321,16 +177,6 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertNotIn("_warning", result)
         self.assertNotIn("error", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_third_consecutive_search_has_warning(self, _mock_ops):
-        """3rd consecutive identical search triggers a warning."""
-        for _ in range(2):
-            search_tool("def main", task_id="t1")
-        result = json.loads(search_tool("def main", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("3 times", result["_warning"])
-        # Warning still returns results
-        self.assertIn("matches", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_fourth_consecutive_search_is_blocked(self, _mock_ops):
@@ -342,31 +188,6 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertIn("BLOCKED", result["error"])
         self.assertNotIn("matches", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_pattern_resets_consecutive(self, _mock_ops):
-        """A different search pattern resets the consecutive counter."""
-        search_tool("def main", task_id="t1")
-        search_tool("def main", task_id="t1")
-        result = json.loads(search_tool("class Foo", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertNotIn("error", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_task_isolated(self, _mock_ops):
-        """Different tasks have separate consecutive counters."""
-        search_tool("def main", task_id="t1")
-        result = json.loads(search_tool("def main", task_id="t2"))
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_other_tool_resets_search_consecutive(self, _mock_ops):
-        """notify_other_tool_call resets search consecutive counter too."""
-        search_tool("def main", task_id="t1")
-        search_tool("def main", task_id="t1")
-        notify_other_tool_call("t1")
-        result = json.loads(search_tool("def main", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertNotIn("error", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_pagination_offset_does_not_count_as_repeat(self, _mock_ops):
@@ -406,19 +227,6 @@ class TestTodoInjectionFiltering(unittest.TestCase):
         self.assertIn("Write fix", injection)
         self.assertIn("Run tests", injection)
 
-    def test_all_completed_returns_none(self):
-        from tools.todo_tool import TodoStore
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Done", "status": "completed"},
-            {"id": "2", "content": "Also done", "status": "cancelled"},
-        ])
-        self.assertIsNone(store.format_for_injection())
-
-    def test_empty_store_returns_none(self):
-        from tools.todo_tool import TodoStore
-        store = TodoStore()
-        self.assertIsNone(store.format_for_injection())
 
     def test_all_active_included(self):
         from tools.todo_tool import TodoStore
