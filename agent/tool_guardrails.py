@@ -132,6 +132,10 @@ class ToolCallGuardrailConfig:
 # single turn" rather than cumulative over the whole session. A single loop
 # issuing dozens of web searches or spawning dozens of subagents is already
 # pathological, so the defaults are deliberately low.
+#
+# For web_search, the cap counts only identical queries (same args hash) within
+# the turn, not all searches. This allows legitimate multi-query research while
+# still catching runaway loops that repeat the same query.
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
 
@@ -152,6 +156,11 @@ class LoopCapConfig:
     repeated identical/failing calls): these caps are a hard ceiling on the
     total count of a tool within the turn and fire regardless of
     ``hard_stop_enabled``. A value of ``0`` disables the cap (unlimited).
+
+    For ``web_search``, the cap counts only **identical** queries (same args
+    hash) within the turn, not all searches. This allows legitimate multi-query
+    research (e.g., 50 different searches on a complex topic) while still
+    catching runaway loops that repeat the same query.
     """
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
@@ -301,6 +310,10 @@ class ToolCallGuardrailController:
         # of hard_stop_enabled (which only governs the per-turn loop detector).
         # We block BEFORE the call runs once the count is already at the cap,
         # then increment for an allowed call so the (cap+1)-th is refused.
+        #
+        # For web_search, the cap counts only identical queries (same args hash),
+        # not all searches. This allows legitimate multi-query research while
+        # still catching runaway loops that repeat the same query.
         cap_block = self._check_loop_cap(tool_name, _coerce_args(args), signature)
         if cap_block is not None:
             return cap_block
@@ -483,7 +496,8 @@ class ToolCallGuardrailController:
                         count=identical_count,
                         signature=signature,
                     )
-                    self._halt_decision = decision
+                    # Do NOT set _halt_decision — only this specific query is
+                    # pathological, the turn can continue with different queries.
                     return decision
                 self._turn_web_search_identical[signature.args_hash] = identical_count + 1
             return None
