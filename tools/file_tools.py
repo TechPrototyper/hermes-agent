@@ -2690,7 +2690,9 @@ PATCH_SCHEMA = {
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-        "REQUIRED PARAMETERS: mode, patch."
+        "REQUIRED PARAMETERS: mode, patch.\n\n"
+        "Example replace: {\"mode\": \"replace\", \"path\": \"/abs/path/file.py\", \"old_string\": \"foo\", \"new_string\": \"bar\"}\n"
+        "Example patch:   {\"mode\": \"patch\", \"patch\": \"*** Begin Patch\\n*** Update File: f\\n@@ @@\\n-old\\n+new\\n*** End Patch\"}"
     ),
     "parameters": {
         "type": "object",
