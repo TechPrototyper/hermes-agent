@@ -2759,7 +2759,12 @@ _PATCH_V4A_DESCRIPTION = (
     "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
     "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
     "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-    "REQUIRED PARAMETERS: mode, patch."
+    "REQUIRED PARAMETERS: mode, patch.\n\n"
+    # Concrete call examples (carry-patch 0822641f89): folded into the V4A layer
+    # rather than the base schema so non-OpenAI sessions keep the lean base and
+    # only the population that actually emits V4A pays for the examples.
+    "Example replace: {\"mode\": \"replace\", \"path\": \"/abs/path/file.py\", \"old_string\": \"foo\", \"new_string\": \"bar\"}\n"
+    "Example patch:   {\"mode\": \"patch\", \"patch\": \"*** Begin Patch\\n*** Update File: f\\n@@ @@\\n-old\\n+new\\n*** End Patch\"}"
 )
 
 _PATCH_V4A_PARAMS = {
