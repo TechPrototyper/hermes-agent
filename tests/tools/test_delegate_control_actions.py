@@ -555,10 +555,13 @@ def test_control_action_not_blocked_at_spawn_cap():
 
     cfg = ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=1))
     ctl = ToolCallGuardrailController(cfg)
-    # Exhaust the cap with a spawn
+    # Exhaust the cap for this delegation signature with a spawn
     assert ctl.before_call("delegate_task", {"goal": "a"}).action == "allow"
-    # A second spawn is blocked
-    assert ctl.before_call("delegate_task", {"goal": "b"}).action == "block"
+    # Re-spawning the identical delegation is blocked (without halting the turn)
+    assert ctl.before_call("delegate_task", {"goal": "a"}).action == "block"
+    assert ctl.halt_decision is None
+    # A *different* delegation is legitimate work and stays allowed
+    assert ctl.before_call("delegate_task", {"goal": "b"}).action == "allow"
     # Control actions still pass on a fresh controller after cap exhaustion
     ctl2 = ToolCallGuardrailController(cfg)
     assert ctl2.before_call("delegate_task", {"goal": "a"}).action == "allow"
@@ -571,5 +574,5 @@ def test_control_action_not_blocked_at_spawn_cap():
     assert (
         ctl2.before_call("delegate_task", {"action": "list"}).action == "allow"
     )
-    # And spawns remain blocked afterwards — the control call didn't reset it
-    assert ctl2.before_call("delegate_task", {"goal": "c"}).action == "block"
+    # And the identical spawn remains blocked — the control call didn't reset it
+    assert ctl2.before_call("delegate_task", {"goal": "a"}).action == "block"

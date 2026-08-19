@@ -80,6 +80,14 @@ class ToolCallGuardrailConfig:
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
+    cycle_detection: "CycleDetectionConfig" = field(
+        default_factory=lambda: CycleDetectionConfig()
+    )
+    # Ordered list of increasingly capable subagents the steering message
+    # points at when a loop is interrupted ("escalate to the next smarter
+    # agent"). Populated from config.yaml (tool_loop_guardrails.
+    # escalation_ladder); empty means a generic escalation hint.
+    escalation_ladder: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -123,37 +131,55 @@ class ToolCallGuardrailConfig:
                 defaults.no_progress_block_after,
             ),
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
+            cycle_detection=CycleDetectionConfig.from_mapping(data.get("cycle_detection")),
+            escalation_ladder=_str_tuple(data.get("escalation_ladder")),
         )
 
 
-# Default session-wide caps, matching Claude Code's v2.1.212 runaway-loop
-# Per-turn (per-agent-loop) caps on runaway-prone tool calls. Counts reset at
+def _str_tuple(value: Any) -> tuple[str, ...]:
+    """Coerce a config list into a tuple of non-empty strings."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+# Per-turn (per-agent-loop) caps on *identical* tool calls. Counts reset at
 # the start of every agent loop (reset_for_turn), so the limit is "within a
-# single turn" rather than cumulative over the whole session. A single loop
-# issuing dozens of web searches or spawning dozens of subagents is already
-# pathological, so the defaults are deliberately low.
+# single turn" rather than cumulative over the whole session.
+#
+# Deliberately NOT a total-count cap: a turn may legitimately issue 50
+# different web searches, create 50 different bookings, or delegate 50
+# distinct subtasks. What is never legitimate is repeating the *same* call
+# (same tool, same canonical args) dozens of times — that is a runaway loop.
+# The caps therefore count per (tool, args_hash) signature.
+_DEFAULT_MAX_IDENTICAL_CALLS_PER_TURN = 50
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
 
 
 @dataclass(frozen=True)
 class LoopCapConfig:
-    """Per-turn caps on runaway-prone tool calls.
+    """Per-turn caps on *identical* tool calls (same tool + same args).
 
-    Inspired by Claude Code v2.1.212 (Week 29, July 2026), which added caps on
-    WebSearch calls and subagent spawns to stop runaway search / delegation
-    loops. Here the caps count *within a single agent loop* (one turn): the
-    counters reset in ``reset_for_turn`` at the start of every
-    ``run_conversation``, so a legitimate multi-turn session is never starved,
-    but a single turn that spirals into an unbounded search / delegation loop
-    is stopped.
+    Historically these caps counted every call of a runaway-prone tool
+    (inspired by Claude Code v2.1.212), which false-positived on legitimate
+    long sequences — e.g. deep research issuing 50 distinct queries. The caps
+    now count per call *signature* (tool name + canonical args hash): distinct
+    calls are unlimited, only literal repetition is bounded.
+
+    ``max_identical_calls`` applies to every tool; ``max_web_searches`` and
+    ``max_subagents`` remain as per-tool overrides for ``web_search`` and
+    ``delegate_task`` (kept for config compatibility, now with identical-call
+    semantics; ``delegate_task`` still counts spawned agents, per signature).
 
     Semantics differ from the per-turn loop *detector* above (which keys on
-    repeated identical/failing calls): these caps are a hard ceiling on the
-    total count of a tool within the turn and fire regardless of
-    ``hard_stop_enabled``. A value of ``0`` disables the cap (unlimited).
+    repeated identical/failing calls and needs ``hard_stop_enabled``): these
+    caps fire regardless of ``hard_stop_enabled``. A value of ``0`` disables
+    the respective cap (unlimited). A cap block refuses only that signature —
+    the turn continues and different calls keep working.
     """
 
+    max_identical_calls: int = _DEFAULT_MAX_IDENTICAL_CALLS_PER_TURN
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
 
@@ -164,6 +190,9 @@ class LoopCapConfig:
             return cls()
         defaults = cls()
         return cls(
+            max_identical_calls=_non_negative_int(
+                data.get("max_identical_calls"), defaults.max_identical_calls
+            ),
             max_web_searches=_non_negative_int(
                 data.get("max_web_searches"), defaults.max_web_searches
             ),
@@ -171,6 +200,81 @@ class LoopCapConfig:
                 data.get("max_subagents"), defaults.max_subagents
             ),
         )
+
+
+@dataclass(frozen=True)
+class CycleDetectionConfig:
+    """Per-turn detection of repeating tool-call cycles (A-B-C-A-B-C-…).
+
+    A cycle is a trailing sequence of call signatures (tool + canonical args)
+    that repeats with a fixed period. Legitimate batch work is *not* a cycle
+    in this sense: iterating "template → fill → create" over 20 invoices uses
+    different args each round, so every round has different signatures and
+    never matches. Only literal round-trips — the same calls with the same
+    args, over and over — are detected. Those burn context/KV without any
+    progress and are always pathological.
+
+    ``min_period`` starts at 2 because period-1 repetition (A-A-A-…) is
+    already covered by the identical-call cap and the no-progress detector.
+    Detection warns after ``warn_after_cycles`` full repetitions and blocks
+    (halting the turn) after ``block_after_cycles``. ``enabled: false``
+    switches the detector off entirely.
+    """
+
+    enabled: bool = True
+    min_period: int = 2
+    max_period: int = 12
+    warn_after_cycles: int = 2
+    block_after_cycles: int = 3
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> "CycleDetectionConfig":
+        """Build config from the ``tool_loop_guardrails.cycle_detection`` section."""
+        if not isinstance(data, Mapping):
+            return cls()
+        defaults = cls()
+        return cls(
+            enabled=_as_bool(data.get("enabled"), defaults.enabled),
+            min_period=max(2, _positive_int(data.get("min_period"), defaults.min_period)),
+            max_period=_positive_int(data.get("max_period"), defaults.max_period),
+            warn_after_cycles=_positive_int(
+                data.get("warn_after_cycles"), defaults.warn_after_cycles
+            ),
+            block_after_cycles=_positive_int(
+                data.get("block_after_cycles"), defaults.block_after_cycles
+            ),
+        )
+
+
+def _trailing_cycle(
+    seq: list[tuple[str, str]], min_period: int, max_period: int
+) -> tuple[int, int]:
+    """Return ``(cycles, period)`` for the longest trailing cycle in ``seq``.
+
+    Scans periods ``min_period..max_period`` and counts how many times the
+    final ``period``-tuple repeats consecutively at the tail of ``seq``.
+    Returns the repetition count and period maximizing the covered tail
+    length (``cycles * period``); ``(1, 0)`` when nothing repeats.
+    """
+    best_cycles, best_period = 1, 0
+    n = len(seq)
+    for period in range(min_period, max_period + 1):
+        if 2 * period > n:
+            break
+        # A uniform tail (A-A-A-…) is plain identical repetition, which the
+        # identical-call cap and the failure/no-progress detectors own —
+        # treating it as a period-2 "cycle" would double-fire on their turf.
+        if len(set(seq[n - period : n])) == 1:
+            continue
+        cycles = 1
+        while True:
+            start = n - (cycles + 1) * period
+            if start < 0 or seq[start : start + period] != seq[n - period : n]:
+                break
+            cycles += 1
+        if cycles >= 2 and cycles * period > best_cycles * best_period:
+            best_cycles, best_period = cycles, period
+    return best_cycles, best_period
 
 
 @dataclass(frozen=True)
@@ -282,11 +386,21 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
-        # Per-turn runaway-loop cap counters. Reset every turn (this method
-        # runs at the start of each run_conversation), so the caps bound a
-        # single agent loop rather than accumulating across the session.
-        self._turn_web_search_count = 0
-        self._turn_subagent_count = 0
+        # Per-turn runaway-loop state. Reset every turn (this method runs at
+        # the start of each run_conversation), so the guards bound a single
+        # agent loop rather than accumulating across the session.
+        #
+        # Identical-call counters, keyed by full signature (tool + args hash):
+        # distinct calls are never throttled, only literal repetition.
+        self._turn_identical_counts: dict[ToolCallSignature, int] = {}
+        # delegate_task spawn counts per args hash (control actions exempt).
+        self._turn_subagent_spawns: dict[str, int] = {}
+        # Executed-call signature sequence for cycle detection (appended in
+        # after_call, so blocked/never-executed calls don't pollute it).
+        self._turn_call_sequence: list[tuple[str, str]] = []
+        # How many times this turn a cycle was soft-blocked with a steering
+        # message. Used for the last-resort halt when steering is ignored.
+        self._cycle_soft_blocks = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -295,18 +409,29 @@ class ToolCallGuardrailController:
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
 
-        # ── Per-turn runaway-loop caps ──────────────────────────────────
-        # These are hard ceilings on how many times a runaway-prone tool may
-        # be called within a single agent loop (turn). They apply regardless
-        # of hard_stop_enabled (which only governs the per-turn loop detector).
+        # ── Per-turn identical-call caps ────────────────────────────────
+        # Ceilings on how often the *same* call (tool + args) may repeat in a
+        # single turn. Distinct calls are unlimited. Applies regardless of
+        # hard_stop_enabled (which only governs the per-turn loop detector).
         # We block BEFORE the call runs once the count is already at the cap,
         # then increment for an allowed call so the (cap+1)-th is refused.
         cap_block = self._check_loop_cap(tool_name, _coerce_args(args), signature)
         if cap_block is not None:
             return cap_block
 
+        # ── Per-turn cycle detection (A-B-C-A-B-C-…) ────────────────────
+        # Steering-first: a detected cycle warns, then soft-blocks the call
+        # with a "take what you have and move on / escalate" message instead
+        # of aborting the turn. Only if the model keeps cycling despite
+        # repeated steering does the turn halt as a last resort.
+        cycle_warn = self._check_cycles(tool_name, signature)
+        if cycle_warn is not None and cycle_warn.should_halt:
+            return cycle_warn
+        if cycle_warn is not None and cycle_warn.action == "block":
+            return cycle_warn
+
         if not self.config.hard_stop_enabled:
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            return cycle_warn or ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -345,7 +470,7 @@ class ToolCallGuardrailController:
                     self._halt_decision = decision
                     return decision
 
-        return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        return cycle_warn or ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
     def after_call(
         self,
@@ -357,6 +482,10 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
+        # Record the executed call for cycle detection. after_call only runs
+        # for calls that actually executed, so blocked calls never pollute
+        # the sequence.
+        self._turn_call_sequence.append((signature.tool_name, signature.args_hash))
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
@@ -444,41 +573,41 @@ class ToolCallGuardrailController:
             return False
         return tool_name in self.config.idempotent_tools
 
+    def _escalation_hint(self) -> str:
+        """Steering suffix: take what you have, move on, escalate if stuck."""
+        base = (
+            " That's enough of this call. Take the results you already have and "
+            "continue the task with them."
+        )
+        ladder = self.config.escalation_ladder
+        if ladder:
+            rungs = " -> ".join(ladder)
+            return base + (
+                " If you have not reached your goal with what you have, do not "
+                "repeat this call — escalate to the next more capable subagent "
+                f"instead (escalation order: {rungs})."
+            )
+        return base + (
+            " If you have not reached your goal with what you have, do not "
+            "repeat this call — escalate to a more capable subagent instead."
+        )
+
     def _check_loop_cap(
         self,
         tool_name: str,
         args: Mapping[str, Any],
         signature: ToolCallSignature,
     ) -> ToolGuardrailDecision | None:
-        """Enforce and advance the per-turn runaway-loop counters.
+        """Enforce and advance the per-turn *identical-call* counters.
 
-        Returns a ``block`` decision when the cap is already reached, otherwise
-        increments the relevant counter for the allowed call and returns
-        ``None``. A cap of 0 disables that limit entirely. Counters reset each
-        turn via ``reset_for_turn``.
+        Counts per (tool, args) signature — distinct calls are unlimited.
+        Returns a ``block`` decision (steering message, no turn halt) when the
+        signature has already repeated up to its cap, otherwise increments and
+        returns ``None``. A cap of 0 disables that limit. ``delegate_task``
+        counts spawned agents per signature; control actions are exempt.
+        Counters reset each turn via ``reset_for_turn``.
         """
         caps = self.config.loop_caps
-
-        if tool_name == "web_search":
-            cap = caps.max_web_searches
-            if cap and self._turn_web_search_count >= cap:
-                decision = ToolGuardrailDecision(
-                    action="block",
-                    code="loop_web_search_cap",
-                    message=(
-                        f"Blocked web_search: this turn has already made {cap} "
-                        "web searches, the per-turn limit. This looks like a "
-                        "runaway search loop. Work with the results you already "
-                        "have and give the user your answer."
-                    ),
-                    tool_name=tool_name,
-                    count=self._turn_web_search_count,
-                    signature=signature,
-                )
-                self._halt_decision = decision
-                return decision
-            self._turn_web_search_count += 1
-            return None
 
         if tool_name == "delegate_task":
             cap = caps.max_subagents
@@ -490,25 +619,116 @@ class ToolCallGuardrailController:
                 # block: once the spawn cap is hit, steering/stopping the
                 # existing children is exactly what should still work.
                 return None
-            if self._turn_subagent_count >= cap:
-                decision = ToolGuardrailDecision(
+            spawned = self._turn_subagent_spawns.get(signature.args_hash, 0)
+            if spawned >= cap:
+                return ToolGuardrailDecision(
                     action="block",
                     code="loop_subagent_cap",
                     message=(
-                        f"Blocked delegate_task: this turn has already spawned "
-                        f"{self._turn_subagent_count} subagents (limit {cap}). "
-                        "This looks like a runaway delegation loop. Finish the "
-                        "work with the results you have and answer the user."
+                        f"Blocked delegate_task: this exact delegation has already "
+                        f"spawned {spawned} subagents this turn (limit {cap})."
+                        + self._escalation_hint()
                     ),
                     tool_name=tool_name,
-                    count=self._turn_subagent_count,
+                    count=spawned,
+                    signature=signature,
+                )
+            self._turn_subagent_spawns[signature.args_hash] = spawned + spawn_count
+            return None
+
+        if tool_name == "web_search":
+            cap = caps.max_web_searches
+            code = "loop_web_search_cap"
+        else:
+            cap = caps.max_identical_calls
+            code = "loop_identical_call_cap"
+        if not cap:
+            return None
+
+        identical = self._turn_identical_counts.get(signature, 0)
+        if identical >= cap:
+            # Block only this signature — the turn continues, different
+            # calls (and different args for the same tool) keep working.
+            return ToolGuardrailDecision(
+                action="block",
+                code=code,
+                message=(
+                    f"Blocked {tool_name}: this exact call has been repeated "
+                    f"{identical} times this turn (limit {cap})."
+                    + self._escalation_hint()
+                ),
+                tool_name=tool_name,
+                count=identical,
+                signature=signature,
+            )
+        self._turn_identical_counts[signature] = identical + 1
+        return None
+
+    def _check_cycles(
+        self, tool_name: str, signature: ToolCallSignature
+    ) -> ToolGuardrailDecision | None:
+        """Detect repeating trailing call cycles including the pending call.
+
+        Returns ``None`` when no cycle threshold is reached, a ``warn``
+        decision at ``warn_after_cycles``, a soft ``block`` with a steering /
+        escalation message at ``block_after_cycles`` (the turn continues), and
+        a ``halt`` only when the model keeps attempting cycles after several
+        soft blocks.
+        """
+        cfg = self.config.cycle_detection
+        if not cfg.enabled:
+            return None
+        key = (signature.tool_name, signature.args_hash)
+        seq = self._turn_call_sequence + [key]
+        cycles, period = _trailing_cycle(seq, cfg.min_period, cfg.max_period)
+        if period == 0 or cycles < cfg.warn_after_cycles:
+            return None
+
+        if cycles >= cfg.block_after_cycles:
+            self._cycle_soft_blocks += 1
+            if self._cycle_soft_blocks > 3:
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="tool_call_cycle_halt",
+                    message=(
+                        f"Stopped: tool calls keep cycling (period {period}, "
+                        f"{cycles} repetitions) despite repeated steering. "
+                        "Summarize the current state for the user."
+                    ),
+                    tool_name=tool_name,
+                    count=cycles,
                     signature=signature,
                 )
                 self._halt_decision = decision
                 return decision
-            self._turn_subagent_count += spawn_count
-            return None
+            return ToolGuardrailDecision(
+                action="block",
+                code="tool_call_cycle_block",
+                message=(
+                    f"Blocked {tool_name}: the last tool calls form a repeating "
+                    f"cycle (period {period}, repeated {cycles}x) with identical "
+                    "arguments each round — this burns context without progress."
+                    + self._escalation_hint()
+                ),
+                tool_name=tool_name,
+                count=cycles,
+                signature=signature,
+            )
 
+        if self.config.warnings_enabled:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="tool_call_cycle_warning",
+                message=(
+                    f"Tool calls are repeating in a cycle (period {period}, "
+                    f"{cycles}x, identical arguments each round). If the next "
+                    "round adds nothing new, stop and work with the results you "
+                    "already have."
+                ),
+                tool_name=tool_name,
+                count=cycles,
+                signature=signature,
+            )
         return None
 
 
