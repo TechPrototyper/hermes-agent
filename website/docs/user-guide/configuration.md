@@ -1771,19 +1771,32 @@ tool_loop_guardrails:
     same_tool_failure: 8
     idempotent_no_progress: 5
   loop_caps:
-    max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
-    max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
+    max_identical_calls: 50    # identical (tool+args) repeats per turn, any tool (0 = unlimited)
+    max_web_searches: 50       # identical web_search queries per turn (0 = unlimited)
+    max_subagents: 50          # identical delegations spawned per turn (0 = unlimited)
+  cycle_detection:
+    enabled: true              # detect repeating call cycles (A-B-C-A-B-C-...)
+    min_period: 2              # shortest cycle length considered
+    max_period: 12             # longest cycle length considered
+    warn_after_cycles: 2       # warn after N full identical repetitions
+    block_after_cycles: 3      # steer (soft-block) after N full repetitions
+  escalation_ladder:           # named in the steering message, most capable last
+    - "Antigravity (Gemini Flash)"
+    - "Codex (GPT Sol)"
+    - "Claude Code (Fable)"
 ```
 
 `hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
 
-### Per-turn runaway-loop caps
+### Per-turn identical-call caps
 
-Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings on how many `web_search` calls and subagent spawns a single agent loop (turn) may make. The counters reset at the start of every turn, so a legitimate multi-turn session is never starved — but a single turn that spirals into an unbounded search or delegation loop is stopped. These are always on and fire regardless of `hard_stop_enabled`. A single turn issuing dozens of web searches or spawning dozens of subagents is already pathological, so the defaults are low. When a cap is reached, the offending tool call is blocked with an explanatory message and the turn stops cleanly instead of burning the rest of the budget. Set either value to `0` to disable that cap entirely.
+Separate from the failure-based thresholds above, `loop_caps` bounds how often the **same** call — same tool with identical canonical arguments — may repeat within a single agent loop (turn). Distinct calls are unlimited: a research turn may issue 50 different `web_search` queries or create 50 different bookings without ever touching a cap. Only literal repetition is bounded, because repeating an identical call dozens of times is always a runaway loop. The counters reset at the start of every turn and fire regardless of `hard_stop_enabled`. A cap block refuses only that exact call and injects a steering message ("take what you have and continue; escalate if needed") — the turn keeps running and different calls keep working. Set a value to `0` to disable that cap.
 
-A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
+A single `delegate_task` batch counts each task toward `max_subagents` per delegation signature (a batch of 3 spends 3); control actions (list/steer/stop) are never blocked.
 
-This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
+### Cycle detection
+
+`cycle_detection` catches repeating round-trips such as A-B-C-A-B-C-… where every round issues the same calls with the same arguments — pure context/KV burn without progress. Legitimate batch work is never flagged: iterating "template → fill → create" over 20 items uses fresh arguments each round, so the signatures differ and no cycle exists. After `warn_after_cycles` full repetitions the agent gets a warning; after `block_after_cycles` the offending call is soft-blocked with a steering message that tells the agent to continue with the results it has, or to escalate to the next more capable subagent from `escalation_ladder`. Only if the agent keeps cycling despite repeated steering does the turn halt as a last resort. Uniform repetition of a single call (A-A-A-…) is not treated as a cycle — that is the identical-call cap's and no-progress detector's territory.
 
 ### Runtime anti-stall guards
 
