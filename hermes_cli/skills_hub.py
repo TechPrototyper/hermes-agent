@@ -1852,6 +1852,12 @@ def skills_command(args) -> None:
                  skip_confirm=getattr(args, "yes", False))
     elif action == "list-modified":
         do_list_modified(as_json=getattr(args, "json", False))
+    elif action == "reconcile":
+        from tools.skills_reconcile import do_reconcile
+        do_reconcile(
+            name=getattr(args, "name", "") or "",
+            apply=getattr(args, "apply", False),
+        )
     elif action == "diff":
         do_diff(args.name)
     elif action == "opt-out":
@@ -2060,6 +2066,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action in {"list-modified", "modified"}:
         do_list_modified(console=c, as_json="--json" in args)
+
+    elif action == "reconcile":
+        from tools.skills_reconcile import do_reconcile
+        name = args[0] if args and not args[0].startswith("-") else ""
+        do_reconcile(name=name, apply="--apply" in args)
 
     elif action == "diff":
         if not args:

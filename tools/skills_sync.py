@@ -333,6 +333,94 @@ def _content_hash(directory: Path) -> str:
         return _dir_hash(directory)
 
 
+# ── Base-skill reconciliation (CP-5) ─────────────────────────────
+# Sync matrix case 4: a bundled skill was edited locally AND updated upstream
+# in the same interval. The historical behavior (skip, keep ours) protects the
+# local edit but SILENTLY DROPS the upstream improvement — the exact trap we
+# must avoid. Instead we PRESERVE ours, STAGE theirs, and record a pending
+# 3-way merge (see tools/skills_reconcile.py). A real 3-way merge needs the
+# common ancestor (the last upstream we shipped); only its hash lives in the
+# manifest, so we snapshot the CONTENT here at every clean write. Baseline and
+# staging live OUTSIDE the skills tree so the loader never discovers a
+# half-merged / staged SKILL.md.
+
+def _baseline_root() -> Path:
+    return _hermes_home() / "skill-baseline"
+
+
+def _reconcile_root() -> Path:
+    return _hermes_home() / "skill-reconcile"
+
+
+def _pending_file() -> Path:
+    return _reconcile_root() / "pending.json"
+
+
+def _install_rel(dest: Path) -> str:
+    """Skill's path relative to the skills dir, sanitized for use as a store key."""
+    try:
+        return _safe_rel_install_path(dest, _skills_dir())
+    except Exception:
+        return dest.name
+
+
+def _read_pending() -> Dict[str, dict]:
+    try:
+        return json.loads(_pending_file().read_text(encoding="utf-8"))
+    except (OSError, IOError, ValueError):
+        return {}
+
+
+def _write_pending(entries: Dict[str, dict]) -> None:
+    try:
+        _reconcile_root().mkdir(parents=True, exist_ok=True)
+        _pending_file().write_text(
+            json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8"
+        )
+    except (OSError, IOError):
+        logger.debug("could not write reconcile pending manifest", exc_info=True)
+
+
+def _snapshot_baseline(src: Path, dest: Path) -> None:
+    """Record `src` (the just-shipped upstream version) as the reconcile baseline
+    for the skill installed at `dest`. Best-effort: never break the sync."""
+    try:
+        base = _baseline_root() / _install_rel(dest)
+        if base.exists():
+            _rmtree_reconcile(base)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, base)
+    except (OSError, IOError):
+        logger.debug("baseline snapshot failed for %s", dest, exc_info=True)
+
+
+def _stage_reconcile_theirs(skill_name: str, theirs_src: Path) -> bool:
+    """Copy the new upstream version into the reconcile staging area (case 4).
+    Returns True on success. Does not touch any existing merged candidate."""
+    try:
+        theirs_dir = _reconcile_root() / skill_name / "theirs"
+        if theirs_dir.exists():
+            _rmtree_reconcile(theirs_dir)
+        theirs_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(theirs_src, theirs_dir)
+        return True
+    except (OSError, IOError):
+        logger.debug("reconcile staging failed for %s", skill_name, exc_info=True)
+        return False
+
+
+def _prune_stale_reconcile(keep: Set[str], previously: Dict[str, dict]) -> None:
+    """Drop staged trees for skills that are no longer case-4 (reconciled,
+    reverted, or upstream caught up). Self-healing across syncs."""
+    for name in set(previously) - keep:
+        try:
+            stale = _reconcile_root() / name
+            if stale.exists():
+                _rmtree_reconcile(stale)
+        except (OSError, IOError):
+            logger.debug("could not prune stale reconcile dir for %s", name, exc_info=True)
+
+
 def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
     """Return official optional skills keyed by folder name and frontmatter name.
 
@@ -765,6 +853,10 @@ def sync_skills(quiet: bool = False) -> dict:
     suppressed_skipped: List[str] = []
     relocated: List[str] = []
     skipped = 0
+    # CP-5 reconcile (sync matrix case 4): skills changed locally AND upstream.
+    reconcile_needed: List[str] = []
+    reconcile_entries: Dict[str, dict] = {}
+    prev_pending = _read_pending()
 
     for skill_name, skill_src in bundled_skills:
         # Curator-pruned built-ins: do not re-seed. The suppression list
@@ -859,6 +951,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     skipped += 1
                     if _dir_hash(dest) == bundled_hash:
                         manifest[skill_name] = bundled_hash
+                        _snapshot_baseline(skill_src, dest)  # CP-5 reconcile baseline
                     elif not quiet:
                         print(
                             f"  ⚠ {skill_name}: bundled version shipped but you "
@@ -871,6 +964,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     shutil.copytree(skill_src, dest)
                     copied.append(skill_name)
                     manifest[skill_name] = bundled_hash
+                    _snapshot_baseline(skill_src, dest)  # CP-5 reconcile baseline
                     if not quiet:
                         print(f"  + {skill_name}")
             except (OSError, IOError) as e:
@@ -905,10 +999,42 @@ def sync_skills(quiet: bool = False) -> dict:
                 continue
 
             if _is_tracked_user_modification(origin_hash, user_hash):
-                # User modified this skill — don't overwrite their changes
-                user_modified.append(skill_name)
-                if not quiet:
-                    print(f"  ~ {skill_name} (user-modified, skipping)")
+                # User modified this skill — never overwrite their changes.
+                if bundled_hash != origin_hash and user_hash != bundled_hash:
+                    # CASE 4 (CP-5): upstream ALSO shipped a new version and it
+                    # differs from ours. (When user_hash == bundled_hash the two
+                    # sides already converged despite a stale baseline — nothing
+                    # to reconcile, so that falls through to the plain keep-ours
+                    # path below, preserving the historical behavior.) Skipping
+                    # here would silently drop the upstream improvement. Preserve
+                    # ours, stage theirs, and record a pending 3-way merge so
+                    # `hermes skills reconcile` can adopt upstream's change while
+                    # re-applying our customization.
+                    if _stage_reconcile_theirs(skill_name, skill_src):
+                        reconcile_needed.append(skill_name)
+                        reconcile_entries[skill_name] = {
+                            "install_rel": _install_rel(dest),
+                            "dest": str(dest),
+                            "origin_hash": origin_hash,
+                            "user_hash": user_hash,
+                            "bundled_hash": bundled_hash,
+                            "baseline_present": (_baseline_root() / _install_rel(dest)).exists(),
+                            "detected_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        if not quiet:
+                            print(
+                                f"  ⚑ {skill_name} (user-modified AND upstream "
+                                f"updated — staged for reconcile)"
+                            )
+                    else:
+                        # Staging failed — fall back to the safe skip so the
+                        # update never breaks; the edit is still protected.
+                        user_modified.append(skill_name)
+                else:
+                    # Upstream unchanged — pure local edit, keep ours (case 3).
+                    user_modified.append(skill_name)
+                    if not quiet:
+                        print(f"  ~ {skill_name} (user-modified, skipping)")
                 continue
 
             # User copy matches origin — check if bundled has a newer version
@@ -927,6 +1053,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         shutil.copytree(skill_src, dest)
                         manifest[skill_name] = bundled_hash
                         updated.append(skill_name)
+                        _snapshot_baseline(skill_src, dest)  # CP-5 reconcile baseline
                         if not quiet:
                             print(f"  ↑ {skill_name} (updated)")
                         # Remove backup after successful copy
@@ -991,6 +1118,19 @@ def sync_skills(quiet: bool = False) -> dict:
                 logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
+
+    # CP-5: persist the current case-4 set as the reconcile queue and drop any
+    # staged trees that are no longer in conflict (self-healing across syncs).
+    _prune_stale_reconcile(set(reconcile_needed), prev_pending)
+    _write_pending(reconcile_entries)
+    if reconcile_needed and not quiet:
+        print(
+            f"\n  ⚑ {len(reconcile_needed)} skill(s) changed locally AND upstream: "
+            f"{', '.join(sorted(reconcile_needed))}\n"
+            f"    Your edits are kept; the upstream update is staged. Run "
+            f"`hermes skills reconcile` to 3-way-merge them."
+        )
+
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)
 
     return {
@@ -998,6 +1138,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "updated": updated,
         "skipped": skipped,
         "user_modified": user_modified,
+        "reconcile_needed": reconcile_needed,
         "cleaned": cleaned,
         "suppressed": suppressed_skipped,
         "relocated": relocated,
@@ -1052,6 +1193,36 @@ def _rmtree_writable(path: Path) -> None:
         for target in (os.path.dirname(fpath), fpath):
             try:
                 os.chmod(target, stat.S_IRWXU)
+            except OSError:
+                pass
+        func(fpath)
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
+def _rmtree_reconcile(path: Path) -> None:
+    """Guarded rmtree for the CP-5 reconcile/baseline stores.
+
+    Those stores live OUTSIDE the skills root (``~/.hermes/skill-baseline/`` and
+    ``~/.hermes/skill-reconcile/``), so the skills-scoped ``_rmtree_writable``
+    guard rejects them. Same catastrophic-wipe philosophy as #48200: refuse
+    anything that is not a strict child of one of the two store roots, so a bad
+    path join can never escalate to wiping ``~/.hermes/``.
+    """
+    import stat
+
+    target = Path(path).resolve()
+    roots = (_baseline_root().resolve(), _reconcile_root().resolve())
+    if not any(r in target.parents for r in roots):
+        raise ValueError(
+            f"refusing to rmtree {target!r}: not strictly under the reconcile "
+            f"stores {roots!r} (scope guard)"
+        )
+
+    def _on_error(func, fpath, exc_info):
+        for t in (os.path.dirname(fpath), fpath):
+            try:
+                os.chmod(t, stat.S_IRWXU)
             except OSError:
                 pass
         func(fpath)

@@ -213,6 +213,31 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Skip confirmation prompt when using --restore",
     )
 
+    skills_reconcile = skills_subparsers.add_parser(
+        "reconcile",
+        help="3-way merge base skills changed BOTH locally and upstream (CP-5)",
+        description=(
+            "When `hermes update` finds a bundled skill you edited locally AND that "
+            "upstream also updated, it keeps your copy and STAGES the new upstream "
+            "version instead of silently dropping the upstream improvement. This command "
+            "produces a 3-way merge (base = last upstream we shipped, ours = your copy, "
+            "theirs = new upstream). No name lists the queue; a name builds the merge; "
+            "--apply replaces the live skill (after backup) when there are no unresolved "
+            "conflicts. Configure a semantic merge backend via "
+            "HERMES_SKILL_RECONCILE_BACKEND (a peer node RTX<->Spark, or a local CLI); "
+            "without one, diff3 is used and conflicts need manual resolution."
+        ),
+    )
+    skills_reconcile.add_argument(
+        "name", nargs="?", default="",
+        help="Skill to reconcile (omit to list the queue)",
+    )
+    skills_reconcile.add_argument(
+        "--apply",
+        action="store_true",
+        help="Replace the live skill with the merged result (backs up the current copy first)",
+    )
+
     skills_list_modified = skills_subparsers.add_parser(
         "list-modified",
         help="List bundled skills you've edited (which `hermes update` keeps)",
