@@ -3756,7 +3756,43 @@ class SessionStore:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from hermes_state import CompressionSessionClosedError
+                from hermes_state import CompressionSessionClosedError, StateDbReplacedError
+
+                if isinstance(exc, StateDbReplacedError):
+                    logger.error(
+                        "Session DB was replaced underneath the gateway for %s; "
+                        "stopping SQLite writes and diverting pending "
+                        "transcripts to the on-disk fallback: %s",
+                        session_id, exc,
+                    )
+                    with self._transcript_retry_lock:
+                        remaining = list(self._dirty_transcripts.get(queue_session_id, []))
+                        self._dirty_transcripts.pop(queue_session_id, None)
+                        self._transcript_append_failures.pop(session_id, None)
+                    for dropped in remaining:
+                        try:
+                            from gateway.shutdown_flush import (
+                                spool_dropped_transcript_message,
+                            )
+                            spool_dropped_transcript_message(session_id, dropped)
+                        except Exception:
+                            logger.warning(
+                                "pending fallback failed for replaced "
+                                "state.db transcript on %s",
+                                session_id,
+                                exc_info=True,
+                            )
+                    try:
+                        from hermes_state import divert_session_transcript_jsonl
+                        divert_session_transcript_jsonl(session_id, remaining)
+                    except Exception:
+                        logger.warning(
+                            "JSONL divert failed for replaced state.db "
+                            "transcript on %s",
+                            session_id,
+                            exc_info=True,
+                        )
+                    return
 
                 if isinstance(exc, CompressionSessionClosedError):
                     # Resolve the full continuation chain via the canonical
@@ -3930,22 +3966,28 @@ class SessionStore:
 
     @staticmethod
     def _is_fts_corruption_error(exc: Exception) -> bool:
-        """True if *exc* looks like an FTS index corruption error.
+        """True only when the failure is provably scoped to the FTS index.
 
-        Matches the specific SQLite error strings for malformed disk images
-        and FTS table corruption — not bare ``"fts"`` substrings which match
-        unrelated words like ``"shifts"`` or ``"gifts"``.
+        A generic ``database disk image is malformed`` (bare SQLITE_CORRUPT)
+        can mean structural damage to canonical B-trees, not just the FTS
+        shadow tables — treating it as FTS-only here made the store rebuild
+        the index and retry transcript writes against a structurally corrupt
+        database (#97940). Only errors that name ``messages_fts`` or carry
+        FTS provenance per ``SessionDB._is_fts_write_corruption_error``
+        (``SQLITE_CORRUPT_VTAB`` result code, or explicit ``fts5:`` corrupt
+        structure text) may authorize the one-shot rebuild-and-retry.
+        Everything else falls through to the bounded retry/backoff path.
         """
         text = str(exc).lower()
-        return any(
-            marker in text
-            for marker in (
-                "database disk image is malformed",
-                "malformed database schema",
-                "messages_fts",
-                "no such table: messages_fts",
-            )
-        )
+        if "messages_fts" in text:
+            return True
+        import sqlite3
+
+        from hermes_state import SessionDB
+
+        if isinstance(exc, sqlite3.DatabaseError):
+            return SessionDB._is_fts_write_corruption_error(exc)
+        return False
 
     def _rebuild_fts_once(self) -> bool:
         """Attempt FTS5 ``rebuild`` command once per store lifetime.
