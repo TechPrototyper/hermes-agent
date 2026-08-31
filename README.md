@@ -1,3 +1,42 @@
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!--  TechPrototyper / SmartLogics Hermes — Fork (branch: consolidation)        -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+
+> ## ⚡ TechPrototyper Hermes — der aufgebohrte Fork
+>
+> Dies ist ein **bewusst gepflegter Fork** von [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent),
+> abgestimmt auf **Consumer-Blackwell-Inferenz (RTX 5090 / DGX Spark)** und **Microsoft-365-Betrieb**.
+> Alle Änderungen liegen als saubere Carry-Patch-Commits auf `consolidation` und werden nach jedem
+> Upstream-Update auf `origin/main` rebased.
+>
+> | | |
+> |---|---|
+> | **Version** | `consolidation` — Stand 2026-08-31 |
+> | **Upstream-Basis** | `origin/main @ 3783fd9f` (2026-08-31) |
+> | **Rückstand zu Upstream** | ~227 Commits · aktualisieren: `git fetch origin && git rev-list --count consolidation..origin/main` |
+> | **Carry-Patches** | 7 (CP-1 … CP-6, siehe unten) |
+>
+> ### 🏆 Unsere Verbesserungen gegenüber Upstream
+>
+> 1. **Optimierte Basis-Skills gegen Tool-Calling-Fehler.** Differenzierte Tool-Call-Bremse —
+>    Identical-Call-Caps, Zyklen-Erkennung (A,B,C,A,B,C…) und Eskalations-Steering statt stumpfem
+>    Abbruch; dazu inhaltsbasiertes Modell-Routing. Endlos-Tool-Call-Schleifen werden erkannt und
+>    zum Fortschritt gezwungen, der aufgeblähte Kontext gerettet. *(CP-1, CP-2, CP-3)*
+> 2. **E-Mail mit Microsoft Graph API im Gateway.** Zuverlässige, verbesserte M365-Anbindung über
+>    Graph (OAuth2, Mail.ReadWrite/Mail.Send) — **rein Graph, kein IMAP/SMTP/POP**. Für Tenants, wo
+>    IMAP durch MFA/Tenant-Policy blockiert ist. *(CP-6)*
+> 3. **Basis-Skill-Reconciliation (3-Wege-Merge).** Lokal angepasste Basis-Skills werden bei Updates
+>    geschützt — **und** Upstream-Verbesserungen an denselben Skills übernommen (statt still verloren),
+>    per `hermes skills reconcile`, optional LLM-getrieben über einen Peer-Node. *(CP-5)*
+> 4. **Robuste Serving-Linie** für sm120/sm121 (NVFP4-KV, GridBook+MTP, Prefix-Cache unter
+>    Spekulation) — dokumentiert in den Rezepten des Labs.
+>
+> *Rebase-Workflow: `git fetch origin && git rebase origin/main` auf `consolidation`, dann
+> `git push fork consolidation`. Konflikte lösen wir eben — dafür bleibt der Stand frisch **und**
+> trägt jede unserer Verbesserungen.*
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
