@@ -2,7 +2,7 @@
 Microsoft Graph API Email platform adapter for the Hermes gateway.
 
 Allows users to interact with Hermes by sending emails via Microsoft Graph API.
-Uses Microsoft Graph API (OAuth2) to receive/send messages with SMTP fallback for sending.
+Uses Microsoft Graph API (OAuth2) exclusively to receive and send messages — no IMAP/SMTP/POP.
 
 Environment variables / secrets:
     EMAIL_AUTH_MODE     — 'graph' to use this adapter (default is 'imap')
@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import re
-import smtplib
 import socket
 import ssl
 import sys
@@ -192,7 +191,7 @@ def check_graph_email_requirements() -> bool:
 
 
 class GraphEmailAdapter(BasePlatformAdapter):
-    """Email gateway adapter using Microsoft Graph API (receive/send) + SMTP fallback."""
+    """Email gateway adapter using Microsoft Graph API only (receive + send). No IMAP/SMTP/POP."""
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -218,8 +217,6 @@ class GraphEmailAdapter(BasePlatformAdapter):
         ).strip()
         self._user_password = self._creds.get("user_password", "") or _get_secret("EMAIL_PASSWORD", "")
 
-        self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "") or "outlook.office365.com").strip()
-        self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
         self._skip_attachments = extra.get("skip_attachments", False)
@@ -585,7 +582,7 @@ class GraphEmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
         file_paths: Optional[List[str]] = None,
     ) -> str:
-        """Send email via POST /me/sendMail with SMTP fallback."""
+        """Send email via Graph API POST /me/sendMail (Graph-only, no SMTP fallback)."""
         ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
@@ -650,71 +647,14 @@ class GraphEmailAdapter(BasePlatformAdapter):
             logger.info("[GraphEmail] Sent reply via Graph API to %s (subject: %s)", to_addr, subject)
             return generated_msg_id
 
-        logger.warning(
-            "[GraphEmail] POST /me/sendMail failed (status %d: %s). Falling back to SMTP...",
+        # Pure Graph — no IMAP/SMTP/POP fallback (Tim, 2026-08-31: "kein IMAP,
+        # SMTP und POP3", CP-6). A send failure surfaces loudly instead of
+        # silently degrading to SMTP.
+        logger.error(
+            "[GraphEmail] POST /me/sendMail failed (status %d: %s). Graph-only, no fallback.",
             status, err_text[:200]
         )
-
-        # Fallback to SMTP
-        return self._send_email_smtp_fallback(to_addr, subject, body, original_msg_id, generated_msg_id, file_paths)
-
-    def _send_email_smtp_fallback(
-        self,
-        to_addr: str,
-        subject: str,
-        body: str,
-        original_msg_id: Optional[str],
-        generated_msg_id: str,
-        file_paths: Optional[List[str]] = None,
-    ) -> str:
-        """Fallback SMTP sender using Office 365 or configured SMTP host."""
-        if not self._user_password:
-            raise RuntimeError("SMTP fallback failed: user_password not found in credentials/env")
-
-        msg = MIMEMultipart()
-        msg["From"] = self._address
-        msg["To"] = to_addr
-        msg["Subject"] = subject
-        msg["Date"] = formatdate(localtime=True)
-        msg["Message-ID"] = generated_msg_id
-
-        if original_msg_id:
-            msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
-
-        if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
-
-        if file_paths:
-            for fp in file_paths:
-                p = Path(fp)
-                if not p.exists():
-                    continue
-                try:
-                    with open(p, "rb") as f:
-                        part = MIMEBase("application", "octet-stream")
-                        part.set_payload(f.read())
-                        encoders.encode_base64(part)
-                        part.add_header("Content-Disposition", f"attachment; filename={p.name}")
-                        msg.attach(part)
-                except Exception as e:
-                    logger.warning("[GraphEmail] Failed to attach %s for SMTP: %s", fp, e)
-
-        server = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-        try:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(self._address, self._user_password)
-            server.send_message(msg)
-        finally:
-            try:
-                server.quit()
-            except Exception:
-                server.close()
-
-        logger.info("[GraphEmail] Sent reply via SMTP fallback to %s (subject: %s)", to_addr, subject)
-        return generated_msg_id
+        raise RuntimeError(f"Graph sendMail failed (status {status}): {err_text[:200]}")
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
