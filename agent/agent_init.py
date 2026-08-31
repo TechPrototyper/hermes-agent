@@ -1058,6 +1058,13 @@ def init_agent(
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
 
+    # Loop-breaker signal (CP-3) — out-of-band state parsed from the
+    # x-litellm-loop-intervention response header that LiteLLM's loop_breaker
+    # callback sets when it force-progresses + debloats a detected tool-call
+    # loop. Consumed once per turn to collapse the repeated turns out of our
+    # OWN durable history (root-cause bloat removal). None when no loop fired.
+    agent._loop_intervention_state = None
+
     # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
     # x-nous-credits-* response headers after each API call.  Session-start
     # remaining is latched the first time a header is ever seen so we can

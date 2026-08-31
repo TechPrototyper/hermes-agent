@@ -52,6 +52,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
+    collapse_loop_turns,
     _repair_tool_call_arguments,
     coalesce_tool_call_id,
     _sanitize_messages_non_ascii,
@@ -7878,7 +7879,31 @@ def run_conversation(
                             # this turn's fresh, not-yet-persisted rows into history_ids
                             # and skip writing them.
                             messages = _pruned_msgs
-                
+
+                # CP-3 loop-breaker cleanup: if LiteLLM's loop_breaker signalled
+                # (out-of-band header, captured into _loop_intervention_state) that
+                # it force-progressed a detected tool-call loop, collapse the same
+                # repeated turns out of OUR durable history so the bloat is gone at
+                # the root (not re-sent + re-detected every turn). Consume-once,
+                # fail-open, complete-groups-only — the pairing invariants that
+                # close_interrupted_tool_sequence relies on stay intact.
+                _li = getattr(agent, "_loop_intervention_state", None)
+                if _li:
+                    try:
+                        _collapsed = collapse_loop_turns(
+                            messages, int(_li.get("dropped_turns", 0) or 0)
+                        )
+                        if _collapsed is not messages:
+                            messages = _collapsed
+                            logger.debug(
+                                "loop-breaker collapse: kind=%s dropped_turns=%s",
+                                _li.get("kind"), _li.get("dropped_turns"),
+                            )
+                    except Exception:
+                        logger.debug("loop-breaker collapse skipped", exc_info=True)
+                    finally:
+                        agent._loop_intervention_state = None  # consume-once
+
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
                 

@@ -327,6 +327,60 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+def collapse_loop_turns(messages: list, dropped_turns: int) -> list:
+    """Remove the last ``dropped_turns`` repeated assistant-tool_call GROUPS (CP-3).
+
+    The Hermes half of the loop-breaker: when LiteLLM's loop_breaker signalled
+    (via the x-litellm-loop-intervention header) that it force-progressed a
+    detected tool-call loop, it reports how many repeated assistant-tool_call
+    turns it collapsed out of the request it forwarded. We mirror that in our
+    OWN durable history so the bloat is removed at the root — otherwise every
+    subsequent turn re-sends it and LiteLLM has to re-detect + re-prune each
+    time, and the loop turns persist to the session DB.
+
+    A "group" is one assistant turn carrying ``tool_calls`` plus every following
+    ``role: "tool"`` result row that belongs to it. We only ever drop COMPLETE
+    groups from the tail's loop region, keeping the FIRST occurrence (so the
+    model still sees what it tried) plus a compact marker, plus anything AFTER
+    the loop (e.g. the force-progress text response LiteLLM elicited). Never
+    splits a tool_call from its result — ``close_interrupted_tool_sequence`` and
+    the strict-provider pairing invariants stay intact.
+
+    Non-mutating and no-op-safe: returns a NEW list on a real collapse, or the
+    SAME ``messages`` object unchanged when there is nothing safe to remove, so
+    the caller can commit on identity (``result is not messages``) exactly like
+    the proactive tool-result prune.
+    """
+    if not dropped_turns or dropped_turns < 1 or not messages:
+        return messages
+    # Indices of assistant turns that carry tool_calls, in order.
+    a_idx = [
+        i for i, m in enumerate(messages)
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    if len(a_idx) <= dropped_turns:
+        return messages  # too few to keep a first occurrence — defensively no-op
+    # First assistant-tool_call turn to drop = the (len - dropped_turns)-th.
+    cut = a_idx[len(a_idx) - dropped_turns]
+    # End of the loop region = past the last loop assistant turn's trailing
+    # tool-result rows. Anything after that (the force-progress text turn) is
+    # kept as the post-loop tail.
+    last_a = a_idx[-1]
+    end = last_a + 1
+    while end < len(messages) and isinstance(messages[end], dict) and messages[end].get("role") == "tool":
+        end += 1
+    kept_head = messages[:cut]
+    marker = {
+        "role": "user",
+        "content": (
+            "[loop-breaker: a repeated tool action that produced no new result "
+            "was removed from history to reclaim context. Do not repeat it.]"
+        ),
+    }
+    tail_after_loop = messages[end:]
+    return kept_head + [marker] + tail_after_loop
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -604,6 +658,7 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 __all__ = [
     "_SURROGATE_RE",
     "close_interrupted_tool_sequence",
+    "collapse_loop_turns",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",

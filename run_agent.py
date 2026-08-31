@@ -4233,6 +4233,31 @@ class AIAgent:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
+    def _capture_loop_intervention(self, http_response: Any) -> None:
+        """Parse the x-litellm-loop-intervention header (CP-3 loop-breaker signal).
+
+        LiteLLM's loop_breaker callback sets this out-of-band header when it
+        detects a tool-call loop, force-progresses (tool_choice=none) and
+        debloats the request it forwards. The header carries JSON describing how
+        many repeated assistant-tool_call turns it collapsed, so we can mirror
+        that collapse in our OWN durable history (see _collapse_loop_turns).
+
+        Fail-open: any parse issue leaves the state untouched — a malformed
+        header must never break the agent loop. Never read from msg.content.
+        """
+        if http_response is None:
+            return
+        headers = getattr(http_response, "headers", None)
+        if not headers:
+            return
+        try:
+            raw = headers.get("x-litellm-loop-intervention")
+            if raw:
+                import json
+                self._loop_intervention_state = json.loads(raw)
+        except Exception:
+            pass  # never let header parsing break the agent loop
+
     def _capture_anthropic_response_headers(self, http_response: Any) -> None:
         """Capture out-of-band state from Anthropic Messages response headers.
 
@@ -4243,6 +4268,7 @@ class AIAgent:
         """
         self._capture_rate_limits(http_response)
         self._capture_credits(http_response)
+        self._capture_loop_intervention(http_response)
 
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.
