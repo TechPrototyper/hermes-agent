@@ -2,38 +2,41 @@
 <!--  TechPrototyper / SmartLogics Hermes — Fork (branch: consolidation)        -->
 <!-- ════════════════════════════════════════════════════════════════════════ -->
 
-> ## ⚡ TechPrototyper Hermes — der aufgebohrte Fork
+> ## ⚡ TechPrototyper Hermes — a hardened fork
 >
-> Dies ist ein **bewusst gepflegter Fork** von [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent),
-> abgestimmt auf **Consumer-Blackwell-Inferenz (RTX 5090 / DGX Spark)** und **Microsoft-365-Betrieb**.
-> Alle Änderungen liegen als saubere Carry-Patch-Commits auf `consolidation` und werden nach jedem
-> Upstream-Update auf `origin/main` rebased.
+> A **deliberately maintained fork** of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent),
+> tuned for **consumer-Blackwell inference** (RTX 5090 / DGX Spark) and **Microsoft 365** operation.
+> Every change lives as a clean carry-patch commit on the `consolidation` branch and is re-based
+> onto each upstream release — so this line stays fresh **and** carries every improvement below.
 >
 > | | |
 > |---|---|
-> | **Version** | `consolidation` — Stand 2026-08-31 |
-> | **Upstream-Basis** | `origin/main @ 3783fd9f` (2026-08-31) |
-> | **Rückstand zu Upstream** | ~227 Commits · aktualisieren: `git fetch origin && git rev-list --count consolidation..origin/main` |
-> | **Carry-Patches** | 7 (CP-1 … CP-6, siehe unten) |
+> | **Branch** | `consolidation` (this fork's default) |
+> | **Upstream base** | Hermes **v0.21.0** (NousResearch/main, 2026-08-31) |
+> | **Carry-patches** | 6 (CP-1 … CP-6) |
+> | **How far behind** | `git fetch origin && git rev-list --count consolidation..origin/main` |
 >
-> ### 🏆 Unsere Verbesserungen gegenüber Upstream
+> ### 🏆 What this version does that upstream doesn't
 >
-> 1. **Optimierte Basis-Skills gegen Tool-Calling-Fehler.** Differenzierte Tool-Call-Bremse —
->    Identical-Call-Caps, Zyklen-Erkennung (A,B,C,A,B,C…) und Eskalations-Steering statt stumpfem
->    Abbruch; dazu inhaltsbasiertes Modell-Routing. Endlos-Tool-Call-Schleifen werden erkannt und
->    zum Fortschritt gezwungen, der aufgeblähte Kontext gerettet. *(CP-1, CP-2, CP-3)*
-> 2. **E-Mail mit Microsoft Graph API im Gateway.** Zuverlässige, verbesserte M365-Anbindung über
->    Graph (OAuth2, Mail.ReadWrite/Mail.Send) — **rein Graph, kein IMAP/SMTP/POP**. Für Tenants, wo
->    IMAP durch MFA/Tenant-Policy blockiert ist. *(CP-6)*
-> 3. **Basis-Skill-Reconciliation (3-Wege-Merge).** Lokal angepasste Basis-Skills werden bei Updates
->    geschützt — **und** Upstream-Verbesserungen an denselben Skills übernommen (statt still verloren),
->    per `hermes skills reconcile`, optional LLM-getrieben über einen Peer-Node. *(CP-5)*
-> 4. **Robuste Serving-Linie** für sm120/sm121 (NVFP4-KV, GridBook+MTP, Prefix-Cache unter
->    Spekulation) — dokumentiert in den Rezepten des Labs.
+> 1. **Far fewer tool-calling failures.** A differentiated tool-call brake — identical-call caps,
+>    cycle detection (A,B,C,A,B,C…) and escalation-steering instead of a blunt abort — plus a
+>    Graph‑layer loop-breaker that *forces progress* on a detected loop and **reclaims the bloated
+>    context it created**, and content-based model routing. Runaway tool-call loops get redirected,
+>    not killed. *(CP-1, CP-2, CP-3)*
+> 2. **Email over the Microsoft Graph API.** A reliable, first-class M365 gateway channel over Graph
+>    (OAuth2, `Mail.ReadWrite`/`Mail.Send`) — **Graph only, no IMAP/SMTP/POP** — for tenants where
+>    IMAP is blocked by MFA / conditional-access policy. Auto token refresh, whitelist filtering,
+>    attachments. *(CP-6)*
+> 3. **Base-skill reconciliation.** When you edit a bundled skill *and* upstream also improves it,
+>    a plain update silently drops the upstream gain. `hermes skills reconcile` runs a real 3-way
+>    merge (base / ours / theirs) so your customization **and** the upstream improvement both survive
+>    — optionally LLM-driven over a peer inference node. *(CP-5)*
+> 4. **A consumer-Blackwell serving line** behind it all (sm120/sm121: NVFP4-KV, GridBook + native
+>    MTP, prefix-cache under speculation), documented in the lab recipes.
 >
-> *Rebase-Workflow: `git fetch origin && git rebase origin/main` auf `consolidation`, dann
-> `git push fork consolidation`. Konflikte lösen wir eben — dafür bleibt der Stand frisch **und**
-> trägt jede unserer Verbesserungen.*
+> *Maintenance model: `git fetch origin && git rebase origin/main` on `consolidation`, resolve any
+> conflicts, `git push`. `hermes update` is configured with `parked_branch_strategy: update_in_place`
+> so an in-place update merges upstream in without ever switching the deployment off this line.*
 
 <!-- ════════════════════════════════════════════════════════════════════════ -->
 
